@@ -6,7 +6,7 @@ const UA =
 let appConfig = {
     ver: 1,
     title: '金牌影视',
-    site: $cache.get('jpyy_host') || 'https://fitcome.com',
+    site: $cache.get('jpyy_host') || 'https://www.cfkj86.com',
     tabs: [
         {
             name: '电影',
