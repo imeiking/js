@@ -24,7 +24,7 @@ const appConfig = {
     }, {
         name: '动漫',
         ext: {
-            url: 'https://www.mtyy5.com/vodshow/2--------{page}---.html'
+            url: 'https://www.mtyy5.com/vodshow/4--------{page}---.html'
         },
     }, {
         name: '综艺',
