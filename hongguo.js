@@ -1,10 +1,12 @@
+//作者：kingasdfgh
 
 const CryptoJS = createCryptoJS();
+
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.142 Safari/537.36';
 
 let appConfig = {
-    ver: 20251207,
-    title: '红果短剧_兔',
+    ver: 20260102,
+    title: '红果短剧',
     site: 'https://fanqienovel.com/#短剧',
     tabs: [
         {
@@ -175,6 +177,7 @@ async function search(ext) {
             "User-Agent": UA
         }
     });
+
     argsify(data).search_tabs.forEach((t) => {
         try {
             if (t.title != "短剧") return
@@ -182,17 +185,24 @@ async function search(ext) {
             return
         }
 
-        t.data.forEach((e) => {
-            cards.push({
-                vod_id: `${e.video_data[0].series_id}`,
-                vod_name: e.video_data[0].title,
-                vod_pic: e.video_data[0].cover || '',
-                vod_remarks: getSubTitle(e.video_data[0].sub_title || ''),
-                ext: {
-                    id: `${e.video_data[0].series_id}`,
-                },
+        try {
+            t.data.forEach((e) => {
+                if (typeof e.video_data == "undefined") {
+                    return
+                }
+                cards.push({
+                    vod_id: `${e.video_data[0].series_id}`,
+                    vod_name: e.video_data[0].title,
+                    vod_pic: e.video_data[0].cover || '',
+                    vod_remarks: getSubTitle(e.video_data[0].sub_title || ''),
+                    ext: {
+                        id: `${e.video_data[0].series_id}`,
+                    },
+                });
             });
-        });
+        } catch (e) {
+            $print(e);
+        }
     });
 
     return jsonify({
@@ -220,3 +230,6 @@ function getSubTitle(sub_title) {
     let a = sub_title.split('·');
     return sub_title = a.length <= 2 ? sub_title : a.slice(-2).join('·')
 }
+
+
+
