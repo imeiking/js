@@ -2,15 +2,15 @@ const cheerio = createCheerio()
 const UA =
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
 const headers = {
-    Referer: 'https://www.libvio.cc/',
-    Origin: 'https://www.libvio.cc',
+    Referer: 'https://www.libvio.site/',
+    Origin: 'https://www.libvio.site',
     'User-Agent': UA,
 }
 
 const appConfig = {
     ver: 1,
     title: 'LIBVIO',
-    site: 'https://www.libvio.cc',
+    site: 'https://www.libvio.site',
     tabs: [
         {
             name: '首页',
