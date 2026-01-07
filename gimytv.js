@@ -3,79 +3,79 @@ const CryptoJS = createCryptoJS()
 //JL / JCC  / djplayer 未做
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 const headers = {
-    'Referer': 'https://www.gimytv.app/',
-    'Origin': 'https://www.gimytv.app',
+    'Referer': 'https://www.gimytv.ai/',
+    'Origin': 'https://www.gimytv.ai',
     'User-Agent': UA,
 }
 
 const appConfig = {
     ver: 1,
     title: "剧迷_兔",
-    site: "https://www.gimytv.app",
+    site: "https://www.gimytv.ai",
     tabs: [{
         name: '陆剧',
         ext: {
-            url: 'https://gimytv.app/explore/13--------{page}---.html'
+            url: 'https://gimytv.ai/explore/13--------{page}---.html'
         },
     }, {
         name: '短剧',
         ext: {
-            url: 'https://gimytv.app/explore/34--------{page}---.html'
+            url: 'https://gimytv.ai/explore/34--------{page}---.html'
         },
     }, {
         name: '韩剧',
         ext: {
-            url: 'https://gimytv.app/explore/20--------{page}---.html'
+            url: 'https://gimytv.ai/explore/20--------{page}---.html'
         },
     }, {
         name: '美剧',
         ext: {
-            url: 'https://gimytv.app/explore/16--------{page}---.html'
+            url: 'https://gimytv.ai/explore/16--------{page}---.html'
         },
     }, {
         name: '日剧',
         ext: {
-            url: 'https://gimytv.app/explore/15--------{page}---.html'
+            url: 'https://gimytv.ai/explore/15--------{page}---.html'
         },
     }, {
         name: '台剧',
         ext: {
-            url: 'https://gimytv.app/explore/14--------{page}---.html'
+            url: 'https://gimytv.ai/explore/14--------{page}---.html'
         },
     }, {
         name: '港剧',
         ext: {
-            url: 'https://gimytv.app/explore/21--------{page}---.html'
+            url: 'https://gimytv.ai/explore/21--------{page}---.html'
         },
     }, {
         name: '海外剧',
         ext: {
-            url: 'https://gimytv.app/explore/31--------{page}---.html'
+            url: 'https://gimytv.ai/explore/31--------{page}---.html'
         },
     }, {
         name: '纪录片',
         ext: {
-            url: 'https://gimytv.app/explore/22--------{page}---.html'
+            url: 'https://gimytv.ai/explore/22--------{page}---.html'
         },
     }, {
         name: '电影',
         ext: {
-            url: 'https://gimytv.app/explore/1--------{page}---.html'
+            url: 'https://gimytv.ai/explore/1--------{page}---.html'
         },
     }, {
         name: '动漫',
         ext: {
-            url: 'https://gimytv.app/explore/4--------{page}---.html'
+            url: 'https://gimytv.ai/explore/4--------{page}---.html'
         },
     },{
         name: '综艺',
         ext: {
-            url: 'https://gimytv.app/explore/29--------{page}---.html'
+            url: 'https://gimytv.ai/explore/29--------{page}---.html'
         },
     },{
         name: '短剧',
         ext: {
-            url: 'https://gimytv.app/explore/34--------{page}---.html'
+            url: 'https://gimytv.ai/explore/34--------{page}---.html'
         },
     },
     ]
@@ -268,21 +268,21 @@ async function getPlayinfo(ext) {
     } else if (jctype == 'JL4K' || jctype == 'JL2K' || jctype == 'JCC' || jctype == 'JLDJ') {
         //todo
         // JL / JCC 走 jlplayer.php
-        // MacPlayer.Html = '<iframe border="0" allowfullscreen="true" src="//gimytv.app/jklplayer/index.php?url='
+        // MacPlayer.Html = '<iframe border="0" allowfullscreen="true" src="//gimytv.ai/jklplayer/index.php?url='
         //     + player_data.url + '&jctype=' + jctype + '&next=//' + maccms.url + parent.MacPlayer.PlayLinkNext
         //     + '" width="100%" height="' + MacPlayer.Height + '" frameborder="0" scrolling="no"></iframe>';
     } else if (jctype == 'djplayer') {
         //todo
-        // const {data} = await $fetch.get(`https://gimytv.app/jcplayer/cplayer.php?url=${player_data.url}&jctype=djplayer`, {
+        // const {data} = await $fetch.get(`https://gimytv.ai/jcplayer/cplayer.php?url=${player_data.url}&jctype=djplayer`, {
         //     headers
         // })
         // 錦鯉短劇專用 djplayer
-        // MacPlayer.Html = '<iframe border="0" allowfullscreen="true" src="//gimytv.app/jcplayer/cplayer.php?url='
+        // MacPlayer.Html = '<iframe border="0" allowfullscreen="true" src="//gimytv.ai/jcplayer/cplayer.php?url='
         //     + player_data.url + '&jctype=' + jctype + '&next=//' + maccms.url + '' + parent.MacPlayer.PlayLinkNext
         //     + '" height="' + MacPlayer.Height + '" width="100%" height="100%" marginWidth="0" frameSpacing="0" marginHeight="0" frameBorder="0" scrolling="no" vspale="0" ></iframe>';
     } else if (jctype == 'JK2' || jctype == 'Disney' || jctype == 'qingshan') {
         // JK2
-        const {data} = await $fetch.get(`https://gimytv.app/jcplayer/?url=${player_data.url}&jctype=JK2`, {
+        const {data} = await $fetch.get(`https://gimytv.ai/jcplayer/?url=${player_data.url}&jctype=JK2`, {
             headers
         })
         const url = data.match(/playurl\s*=\s*['"]([^'"]+)['"]/)[1];
@@ -291,7 +291,7 @@ async function getPlayinfo(ext) {
 
         const body = `url=${player_data.url}`;
 
-        const { data } = await $fetch.post("https://gimytv.app/jcplayer/hp/api.php", body,{headers:headers});
+        const { data } = await $fetch.post("https://gimytv.ai/jcplayer/hp/api.php", body,{headers:headers});
 
         let jmurl=parseJsonIfString(data).url
 
