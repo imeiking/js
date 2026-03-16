@@ -1,55 +1,51 @@
+
 const cheerio = createCheerio()
-const UA =
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+
+let $config = argsify($config_str)
+const SITE = $config.site || "https://www.libvio.life"
+const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 const headers = {
-    Referer: 'https://www.libvio.site/',
-    Origin: 'https://www.libvio.site',
+    'Referer': `${SITE}/`,
+    'Origin': `${SITE}`,
     'User-Agent': UA,
 }
 
 const appConfig = {
     ver: 1,
-    title: 'LIBVIO',
-    site: 'https://www.libvio.site',
-    tabs: [
-        {
-            name: '首页',
-            ext: {
-                url: '/',
-                hasMore: false,
-            },
+    title: "LIBVIO",
+    site: SITE,
+    tabs: [{
+        name: '首页',
+        ext: {
+            url: '/',
+            hasMore: false
         },
-        {
-            name: '电影',
-            ext: {
-                url: '/type/1-1.html',
-            },
+    }, {
+        name: '电影',
+        ext: {
+            url: '/type/1-1.html'
         },
-        {
-            name: '剧集',
-            ext: {
-                url: '/type/2-1.html',
-            },
+    }, {
+        name: '剧集',
+        ext: {
+            url: '/type/2-1.html',
         },
-        {
-            name: '动漫',
-            ext: {
-                url: '/type/4-1.html',
-            },
+    }, {
+        name: '动漫',
+        ext: {
+            url: '/type/4-1.html',
         },
-        {
-            name: '日韩剧',
-            ext: {
-                url: '/type/15-1.html',
-            },
+    }, {
+        name: '日韩剧',
+        ext: {
+            url: '/type/15-1.html'
         },
-        {
-            name: '欧美剧',
-            ext: {
-                url: '/type/16-1.html',
-            },
+    }, {
+        name: '欧美剧',
+        ext: {
+            url: '/type/16-1.html'
         },
-    ],
+    }]
 }
 
 async function getConfig() {
@@ -72,7 +68,7 @@ async function getCards(ext) {
     url = appConfig.site + url.replace('1.html', `${page}.html`)
 
     const { data } = await $fetch.get(url, {
-        headers,
+        headers
     })
 
     const $ = cheerio.load(data)
@@ -103,107 +99,83 @@ async function getTracks(ext) {
     let groups = []
 
     const { data } = await $fetch.get(url, {
-        headers,
+        headers
     })
-
     const $ = cheerio.load(data)
 
-    const heads = $('div.stui-vodlist__head').toArray()
+    const panels = $('div.playlist-panel').toArray();
 
-    for (const head of heads) {
-        let title = $(head).find('.stui-pannel__head').text().trim()
+    for (const panel of panels) {
 
-        if (title.includes('猜你喜欢')) continue
+        const $panel = $(panel);
+        const title = $panel.find('.panel-head h3').text().trim();
 
+        if (title.includes("猜你喜欢")) continue;
+
+        let group = { title, tracks: [] };
+
+        // 播放列表
         if (!title.includes('下载')) {
-            let group = {
-                title,
-                tracks: [],
-            }
 
-            $(head)
-                .find('.stui-content__playlist > li')
-                .each((_, item) => {
-                    group.tracks.push({
-                        name: $(item).text(),
-                        pan: '',
-                        ext: {
-                            url: appConfig.site + $(item).find('a').attr('href'),
-                        },
-                    })
-                })
+            $panel.find('.stui-content__playlist li').each((_, item) => {
 
-            if (group.tracks.length > 0) groups.push(group)
-        } else {
-            let panUrl = $(head).find('ul.stui-content__playlist>li>a').attr('href')
-            let { data: panData } = await $fetch.get(appConfig.site + panUrl, { headers })
+                const a = $(item).find('a');
 
-            let config = JSON.parse(panData.match(/var player_.*?=(.*?)</)[1])
-            let pan = decodeURIComponent(config.url)
+                group.tracks.push({
+                    name: a.text().trim(),
+                    pan: '',
+                    ext: {
+                        url: appConfig.site + a.attr('href')
+                    }
+                });
 
-            groups.push({
-                title,
-                tracks: [
-                    {
-                        name: '合集',
-                        pan,
-                    },
-                ],
-            })
+            });
+
         }
+        // 网盘下载
+        else {
+
+            $panel.find('.netdisk-list a').each((_, item) => {
+
+                const a = $(item);
+
+                group.tracks.push({
+                    name: a.find('.netdisk-name').text().trim(),
+                    pan: a.attr('href')
+                });
+
+            });
+        }
+        groups.push(group);
     }
 
     return jsonify({ list: groups })
 }
 
 async function getPlayinfo(ext) {
-    const { url } = argsify(ext)
-
-    try {
-        const { data } = await $fetch.get(url, {
-            headers,
-        })
-        let obj = JSON.parse(data.match(/var player_.*?=(.*?)</)[1])
-        let player = obj.url
-        if (player.startsWith('http')) {
-            return jsonify({
-                urls: [player],
-                headers: [headers],
-            })
-        }
-
-        const from = obj.from
-        const jsRes = (
-            await $fetch.get(`${appConfig.site}/static/player/${from}.js`, {
-                headers,
-            })
-        ).data
-        const parse = jsRes.match(/src="(.*)url=/)[1]
-
-        const data2 = (
-            await $fetch.get(`${appConfig.site}${parse}${dictToURI({ url: obj.url, id: obj.id, nid: obj.nid })}`, {
-                headers,
-            })
-        ).data
-        const cdn = data2.match(/var vid = '(http.*)';/)[1]
-        $print(`***cdn: ` + cdn)
-        if (cdn.startsWith('http')) {
-            return jsonify({
-                urls: [cdn],
-            })
-        }
-    } catch (error) {
-        $print(error)
-    }
-
-    return jsonify({
-        urls: [],
+    ext = argsify(ext)
+    let url=ext.url
+    const { data } = await $fetch.get(url, {
+        headers
     })
-}
+    let player=""
+    let player_data = JSON.parse(data.match(/var player_.*?=(.*?)</)[1])
+    if (player_data.encrypt == '1') {
+        player = unescape(player_data.url);
+    } else if (player_data.encrypt == '2') {
+        player = unescape(base64decode(player_data.url));
+    }else{
+        player=player_data.url
+    }
+    return jsonify({
+        urls: [ player ],
+        headers: [ headers ],
+    })
 
+}
 async function search(ext) {
     ext = argsify(ext)
-    let cards = []
+    let cards = [];
 
     let text = encodeURIComponent(ext.text)
     let page = ext.page || 1
@@ -213,9 +185,10 @@ async function search(ext) {
         })
     }
 
+
     const url = appConfig.site + `/search/-------------.html?wd=${text}&submit=`
     const { data } = await $fetch.get(url, {
-        headers,
+        headers
     })
 
     const $ = cheerio.load(data)
@@ -237,12 +210,4 @@ async function search(ext) {
     return jsonify({
         list: cards,
     })
-}
-
-function dictToURI(dict) {
-    var str = []
-    for (var p in dict) {
-        str.push(encodeURIComponent(p) + '=' + encodeURIComponent(dict[p]))
-    }
-    return str.join('&')
 }
