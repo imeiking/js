@@ -9,7 +9,7 @@ const headers = {
 const appConfig = {
   ver: 1,
   title: "欧乐影院",
-  site: "https://https://www.olevod.com",
+  site: "https://www.olevod.com",
   tabs: [{
     name: '首页',
     ext: {
