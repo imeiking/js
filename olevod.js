@@ -1,15 +1,15 @@
 const cheerio = createCheerio()
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 const headers = {
-  'Referer': 'https://www.olehdtv.com/',
-  'Origin': 'https://www.olehdtv.com',
+  'Referer': 'https://www.olevod.com/',
+  'Origin': 'https://www.olevod.com',
   'User-Agent': UA,
 }
 
 const appConfig = {
   ver: 1,
   title: "欧乐影院",
-  site: "https://www.olehdtv.com",
+  site: "https://https://www.olevod.com",
   tabs: [{
     name: '首页',
     ext: {
