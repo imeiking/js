@@ -7,7 +7,7 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 
 const baseHeaders = {
     'User-Agent': UA,
-    'Referer': `${SITE}/`
+    'Referer': SITE + '/'
 };
 
 // === 2. 获取分类菜单 ===
@@ -33,7 +33,7 @@ async function getCards(ext) {
     let url = SITE + ext.url;
     
     if (page > 1) {
-        url = url.includes('?') ? url.replace('?', `/page/${page}/?`) : url.replace(/\/$/, '') + `/page/${page}/`;
+        url = url.includes('?') ? url.replace('?', '/page/' + page + '/?') : url.replace(/\/$/, '') + '/page/' + page + '/';
     }
 
     const { data } = await $fetch.get(url, { headers: baseHeaders });
@@ -55,7 +55,7 @@ async function getCards(ext) {
     return jsonify({ list: cards });
 }
 
-// === 4. 获取剧集列表 (修复显示问题) ===
+// === 4. 获取剧集列表 (安全提取版) ===
 async function getTracks(ext) {
     const { url } = argsify(ext);
     const { data } = await $fetch.get(url, { headers: baseHeaders });
@@ -63,15 +63,12 @@ async function getTracks(ext) {
 
     let group = { title: '在线播放', tracks: [] };
 
-    // 尝试寻找所有可能的剧集列表容器
     const listItems = $('.eplister ul li a, .episodelist ul li a');
     
     if (listItems.length > 0) {
         listItems.each((_, item) => {
-            // 提取剧集名称逻辑：优先找标题，找不到就取节点文字
             let name = $(item).find('.epl-num, h3').first().text().trim() || $(item).text().trim();
-            
-            // 清理多余文字，保持简洁
+            // 清理多余文字
             name = name.replace(/Jujutsu Kaisen: The Culling Game Part 1/gi, "").trim();
             
             let link = $(item).attr('href');
@@ -83,60 +80,73 @@ async function getTracks(ext) {
             }
         });
         
-        // 简单的倒序检查：如果第一集的数字比最后一集大，说明是倒序排列，需要反转
-        if (group.tracks.length > 1) {
-            const firstNum = group.tracks[0].name.match(/\d+/);
-            const lastNum = group.tracks[group.tracks.length - 1].name.match(/\d+/);
-            if (firstNum && lastNum && parseInt(firstNum[0]) > parseInt(lastNum[0])) {
-                group.tracks.reverse();
+        // 安全倒序检查：防崩溃写法
+        try {
+            if (group.tracks.length > 1) {
+                let firstNum = parseInt(group.tracks[0].name.replace(/[^\d]/g, "") || "0");
+                let lastNum = parseInt(group.tracks[group.tracks.length - 1].name.replace(/[^\d]/g, "") || "0");
+                if (firstNum > lastNum) {
+                    group.tracks.reverse();
+                }
             }
-        }
+        } catch(e) {}
     } else {
-        // 兜底：如果没找到列表，则提供当前页面作为单集
         group.tracks.push({ name: '播放本集', ext: { url: url } });
     }
 
     return jsonify({ list: [group] });
 }
 
-// === 5. 获取播放链接 (针对 XPTV 优化) ===
+// === 5. 获取播放链接 (XPTV 安全嗅探版) ===
 async function getPlayinfo(ext) {
     ext = argsify(ext);
     const { data } = await $fetch.get(ext.url, { headers: baseHeaders });
     const $ = cheerio.load(data);
     
     let playUrl = "";
-    let parseMode = 1; // 默认开启 XPTV 嗅探模式
+    let parseMode = 1; // 1为嗅探模式
 
-    // 优先提取 Moon (Filemoon) 线路，因为它在 XPTV 中嗅探最快最准
-    $('select.mirror option').each((_, item) => {
+    // 1. 尝试找最稳的 Moon(Filemoon) 嗅探路线
+    let options = $('select.mirror option').toArray();
+    for (let item of options) {
         let val = $(item).attr('value');
-        let label = $(item).text().toLowerCase();
-        if (val && val.length > 20 && label.includes('moon')) {
+        let text = $(item).text().toLowerCase();
+        
+        if (val && val.length > 20 && text.includes('moon')) {
             try {
-                let decoded = decodeURIComponent(escape(atob(val)));
-                let match = decoded.match(/src="([^"]+)"/);
-                if (match) playUrl = match[1];
+                // 安全解密 base64，兼顾不同环境
+                let decoded = "";
+                if (typeof atob === 'function') {
+                    decoded = decodeURIComponent(escape(atob(val)));
+                } else if (typeof base64decode === 'function') {
+                    decoded = unescape(base64decode(val));
+                }
+                
+                // 用正则提取 iframe 的 src，不使用 cheerio.load 防卡死
+                let match = decoded.match(/src=["'](.*?)["']/i);
+                if (match && match[1]) {
+                    playUrl = match[1];
+                    break;
+                }
             } catch(e) {}
-        }
-    });
-
-    // 如果没找到 Moon，则寻找 Rumble 直链 (m3u8)
-    if (!playUrl) {
-        let m3u8Match = data.match(/"contentUrl"\s*:\s*"(https?:\/\/[^"]+\.m3u8[^"]*)"/i);
-        if (m3u8Match) {
-            playUrl = m3u8Match[1];
-            parseMode = 0; // m3u8 是直链，不需要嗅探
         }
     }
 
-    // 最终兜底：解密第一个可用的线路
+    // 2. 如果没找到，兜底找 Rumble 的直链
     if (!playUrl) {
-        const firstOption = $('select.mirror option').toArray().find(o => $(o).attr('value')?.length > 20);
-        if (firstOption) {
-            let decoded = decodeURIComponent(escape(atob($(firstOption).attr('value'))));
-            let match = decoded.match(/src="([^"]+)"/);
-            if (match) playUrl = match[1];
+        let m3u8Match = data.match(/"contentUrl"\s*:\s*"(https?:\/\/[^"]+\.(m3u8|mp4)[^"]*)"/i);
+        if (m3u8Match) {
+            playUrl = m3u8Match[1];
+            parseMode = 0; // 找到纯净直链，关闭嗅探直接播
+        }
+    }
+
+    // 3. 安全获取主机域名作为 Referer（绝不使用 new URL 防止崩溃）
+    let safeReferer = SITE + '/';
+    if (playUrl) {
+        let hostMatch = playUrl.match(/^https?:\/\/[^\/]+/i);
+        if (hostMatch) {
+            safeReferer = hostMatch[0] + '/';
         }
     }
 
@@ -145,26 +155,33 @@ async function getPlayinfo(ext) {
         parse: parseMode,
         headers: {
             'User-Agent': UA,
-            'Referer': playUrl ? new URL(playUrl).origin + '/' : SITE
+            'Referer': safeReferer
         }
     });
 }
 
-// === 6. 搜索功能 ===
+// === 6. 搜索 ===
 async function search(ext) {
     ext = argsify(ext);
-    const url = SITE + `/?s=${encodeURIComponent(ext.text)}`;
+    let text = encodeURIComponent(ext.text);
+    let page = ext.page || 1;
+    let url = SITE + `/page/${page}/?s=${text}`;
+    if (page === 1) url = SITE + `/?s=${text}`;
+    
     const { data } = await $fetch.get(url, { headers: baseHeaders });
     const $ = cheerio.load(data);
     let cards = [];
 
     $('article.bs').each((_, each) => {
-        cards.push({
-            vod_id: $(each).find('a').attr('href'),
-            vod_name: $(each).find('.tt h2').text().trim(),
-            vod_pic: $(each).find('img').attr('src'),
-            ext: { url: $(each).find('a').attr('href') }
-        });
+        let path = $(each).find('a').attr('href');
+        if (path) {
+            cards.push({
+                vod_id: path,
+                vod_name: $(each).find('.tt h2').text().trim(),
+                vod_pic: $(each).find('img').attr('src'),
+                ext: { url: path.startsWith('http') ? path : SITE + path }
+            });
+        }
     });
     return jsonify({ list: cards });
 }
