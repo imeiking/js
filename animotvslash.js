@@ -66,7 +66,7 @@ async function getCards(ext) {
     return jsonify({ list: cards })
 }
 
-// 3. 获取剧集列表
+// 3. 获取剧集列表 (修复只显示1集的问题)
 async function getTracks(ext) {
     const { url } = argsify(ext)
     const { data } = await $fetch.get(url, { headers })
@@ -77,29 +77,39 @@ async function getTracks(ext) {
         tracks: [] 
     };
 
-    // 分析源码发现，播放页侧边栏有一个 .episodelist 包含了所有集数
-    const listItems = $('.episodelist ul li a');
+    // 同时兼容“详情页”和“播放页”的两种不同列表标签
+    const listItems = $('.eplister ul li a, .episodelist ul li a');
     
     if (listItems.length > 0) {
-        // 如果能找到列表，就遍历进去
         listItems.each((_, item) => {
-            let epName = $(item).find('.playinfo h3').text().trim() || $(item).find('.playinfo span').text().trim();
-            // 简化名字，比如只提取 "Episode 12"
-            if(epName.includes('Episode')){
-               let match = epName.match(/(Episode \d+)/);
-               if(match) epName = match[1];
+            // 提取集数名称
+            let epName = $(item).find('.epl-num').text().trim() || $(item).find('.playinfo h3').text().trim() || $(item).text().trim();
+            
+            // 把冗长的名字清理一下，提取数字，比如变成 "第12集"
+            if(epName.match(/Episode\s*(\d+)/i)){
+               let match = epName.match(/Episode\s*(\d+)/i);
+               epName = '第' + match[1] + '集';
             }
             
-            group.tracks.push({
-                name: epName || '播放',
-                ext: { url: $(item).attr('href') }
-            });
+            let link = $(item).attr('href');
+            if (link) {
+                group.tracks.push({
+                    name: epName,
+                    ext: { url: link.startsWith('http') ? link : appConfig.site + link }
+                });
+            }
         });
         
-        // 网站的列表通常是最新的在前面（倒序），我们把它翻转一下变成正序（1,2,3...）
-        group.tracks.reverse();
+        // 自动倒序判断：如果网站把最新一集（如第12集）放最前面，我们将其反转为正常的1,2,3顺序
+        if (group.tracks.length > 1) {
+            let firstMatch = group.tracks[0].name.match(/\d+/);
+            let lastMatch = group.tracks[group.tracks.length - 1].name.match(/\d+/);
+            if (firstMatch && lastMatch && parseInt(firstMatch[0]) > parseInt(lastMatch[0])) {
+                group.tracks.reverse();
+            }
+        }
     } else {
-        // 如果是单集电影没有列表，就只播放当前页
+        // 如果网页上完全没有列表（比如单部电影），就当做单集处理
         group.tracks.push({
             name: '播放本集',
             ext: { url: url }
@@ -109,7 +119,7 @@ async function getTracks(ext) {
     return jsonify({ list: [group] })
 }
 
-// 4. 获取真实播放链接
+// 4. 获取真实播放链接 (修复无法播放的问题)
 async function getPlayinfo(ext) {
     ext = argsify(ext)
     let url = ext.url
@@ -118,27 +128,56 @@ async function getPlayinfo(ext) {
     
     let player = ""
 
-    // 分析源码：网站有多个线路，都藏在 <select class="mirror"> 里面，通过 Base64 加密
-    // 我们提取第一个可用线路（通常是 value 不为空的第一个 option）
-    let base64Code = '';
-    $('select.mirror option').each((_, item) => {
-        let val = $(item).attr('value');
-        // 找到第一个有值的线路并跳出循环
-        if (val && val.length > 10 && !base64Code) {
-            base64Code = val;
-        }
-    });
+    // 方案A：直接抓取源码中藏在配置信息里的最纯净的 .m3u8 源（效率最高，播放最快）
+    let match = data.match(/"contentUrl"\s*:\s*"(https?:\/\/[^"]+\.(m3u8|mp4)[^"]*)"/i);
+    if (match && match[1]) {
+        player = match[1];
+    }
 
-    if (base64Code) {
-        // 进行 Base64 解码，还原出包含 iframe 的 HTML 代码
-        let decodedHtml = decodeURIComponent(escape(atob(base64Code)));
-        const $$ = cheerio.load(decodedHtml);
-        player = $$('iframe').attr('src') || "";
-    } else {
-        // 备用方案：如果网页里有直链（像你源码里有一段 "contentUrl":"https://rumble..."）
-        let match = data.match(/"contentUrl":"(.*?\.m3u8)"/);
-        if (match && match[1]) {
-            player = match[1];
+    // 方案B：如果源码没有，去解析页面中的内部加密播放器代码
+    if (!player) {
+        let iframeSrc = $('#pembed iframe, .playvideo iframe').attr('src');
+        if (iframeSrc && iframeSrc.includes('/jw-player/')) {
+            let base64Param = iframeSrc.split('/jw-player/')[1];
+            if (base64Param) {
+                try {
+                    let decoded = decodeURIComponent(escape(atob(base64Param)));
+                    let jwConfig = JSON.parse(decoded);
+                    if (jwConfig.url) player = jwConfig.url;
+                } catch(e) {}
+            }
+        }
+    }
+
+    // 方案C：如果还是没找到，破解旁边的路线切换菜单（.mirror）
+    if (!player) {
+        let options = $('select.mirror option').toArray();
+        for (let item of options) {
+            let val = $(item).attr('value');
+            if (val && val.length > 20) {
+                try {
+                    let decodedHtml = decodeURIComponent(escape(atob(val)));
+                    
+                    // 再次尝试从中提取 m3u8
+                    let m3u8Match = decodedHtml.match(/"contentUrl"\s*:\s*"(https?:\/\/[^"]+\.(m3u8|mp4)[^"]*)"/i);
+                    if (m3u8Match && m3u8Match[1]) {
+                        player = m3u8Match[1];
+                        break;
+                    }
+                    
+                    // 提取里面的 iframe 给解析层
+                    const $$ = cheerio.load(decodedHtml);
+                    let innerIframe = $$('iframe').attr('src');
+                    if (innerIframe && innerIframe.includes('/jw-player/')) {
+                        let base64Param = innerIframe.split('/jw-player/')[1];
+                        let jwConfig = JSON.parse(decodeURIComponent(escape(atob(base64Param))));
+                        if (jwConfig.url) { player = jwConfig.url; break; }
+                    } else if (innerIframe) {
+                        player = innerIframe; 
+                        break; 
+                    }
+                } catch(e) {}
+            }
         }
     }
 
