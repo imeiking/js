@@ -2,222 +2,138 @@ const cheerio = createCheerio()
 
 let $config = argsify($config_str)
 const SITE = $config.site || "https://animotvslash.org"
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-const headers = {
-    'Referer': `${SITE}/`,
-    'Origin': `${SITE}`,
-    'User-Agent': UA,
-}
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
-// 1. 获取分类菜单
-const appConfig = {
-    ver: 1,
-    title: "AnimoTV",
-    site: SITE,
-    tabs: [
-        { name: 'TV动画', ext: { url: '/anime/?type=tv' } },
-        { name: '剧场版', ext: { url: '/anime/?type=movie' } },
-        { name: '最新更新', ext: { url: '/anime/?status=&type=&order=update' } },
-        { name: '热门排行', ext: { url: '/anime/?status=&type=&order=popular' } }
-    ]
-}
-
+// 1. 获取配置
 async function getConfig() {
+    const appConfig = {
+        ver: 1,
+        title: "AnimoTV",
+        site: SITE,
+        tabs: [
+            { name: 'TV动画', ext: { url: '/anime/?type=tv' } },
+            { name: '剧场版', ext: { url: '/anime/?type=movie' } },
+            { name: '最新更新', ext: { url: '/anime/?status=&type=&order=update' } }
+        ]
+    }
     return jsonify(appConfig)
 }
 
-// 2. 获取列表页
+// 2. 获取列表
 async function getCards(ext) {
     ext = argsify(ext)
     let cards = []
     let page = ext.page || 1
-    
-    let url = appConfig.site + ext.url
-    if (page > 1) {
-        if (url.includes('?')) {
-            url = url.replace('?', `/page/${page}/?`)
-        } else {
-            url = url.replace(/\/$/, '') + `/page/${page}/`
-        }
-    }
+    let url = SITE + ext.url + (page > 1 ? (ext.url.includes('?') ? `&page=${page}` : `/page/${page}/`) : '')
 
-    const { data } = await $fetch.get(url, { headers })
+    const { data } = await $fetch.get(url, { headers: { 'User-Agent': UA } })
     const $ = cheerio.load(data)
 
     $('article.bs').each((_, each) => {
         const path = $(each).find('a').attr('href')
         if (path) {
-            const ep = $(each).find('.epx').text().trim()
-            const subDub = $(each).find('.sb').text().trim()
-            const remarks = ep + (subDub ? ` | ${subDub}` : '')
-
             cards.push({
                 vod_id: path,
                 vod_name: $(each).find('.tt h2').text().trim(),
                 vod_pic: $(each).find('img').attr('src'),
-                vod_remarks: remarks,
-                ext: {
-                    url: path.startsWith('http') ? path : appConfig.site + path,
-                },
+                vod_remarks: $(each).find('.epx').text().trim(),
+                ext: { url: path.startsWith('http') ? path : SITE + path }
             })
         }
     })
-
     return jsonify({ list: cards })
 }
 
-// 3. 获取剧集列表 (修复只显示1集的问题)
+// 3. 获取剧集（修复列表显示）
 async function getTracks(ext) {
     const { url } = argsify(ext)
-    const { data } = await $fetch.get(url, { headers })
+    const { data } = await $fetch.get(url, { headers: { 'User-Agent': UA } })
     const $ = cheerio.load(data)
 
-    let group = { 
-        title: '播放列表', 
-        tracks: [] 
-    };
-
-    // 同时兼容“详情页”和“播放页”的两种不同列表标签
-    const listItems = $('.eplister ul li a, .episodelist ul li a');
+    let group = { title: '在线播放', tracks: [] }
+    const listItems = $('.eplister ul li a, .episodelist ul li a')
     
     if (listItems.length > 0) {
         listItems.each((_, item) => {
-            // 提取集数名称
-            let epName = $(item).find('.epl-num').text().trim() || $(item).find('.playinfo h3').text().trim() || $(item).text().trim();
+            let epName = $(item).find('.epl-num').text().trim() || $(item).find('.playinfo h3').text().trim() || $(item).text().trim()
+            if(epName.match(/Episode\s*(\d+)/i)) epName = '第' + epName.match(/Episode\s*(\d+)/i)[1] + '集'
             
-            // 把冗长的名字清理一下，提取数字，比如变成 "第12集"
-            if(epName.match(/Episode\s*(\d+)/i)){
-               let match = epName.match(/Episode\s*(\d+)/i);
-               epName = '第' + match[1] + '集';
-            }
-            
-            let link = $(item).attr('href');
-            if (link) {
-                group.tracks.push({
-                    name: epName,
-                    ext: { url: link.startsWith('http') ? link : appConfig.site + link }
-                });
-            }
-        });
-        
-        // 自动倒序判断：如果网站把最新一集（如第12集）放最前面，我们将其反转为正常的1,2,3顺序
-        if (group.tracks.length > 1) {
-            let firstMatch = group.tracks[0].name.match(/\d+/);
-            let lastMatch = group.tracks[group.tracks.length - 1].name.match(/\d+/);
-            if (firstMatch && lastMatch && parseInt(firstMatch[0]) > parseInt(lastMatch[0])) {
-                group.tracks.reverse();
-            }
-        }
+            group.tracks.push({
+                name: epName,
+                ext: { url: $(item).attr('href'), referer: url } // 记录当前页面作为引用页
+            })
+        })
+        // 自动排序
+        let firstNum = parseInt(group.tracks[0].name.replace(/[^\d]/g, ""))
+        let lastNum = parseInt(group.tracks[group.tracks.length-1].name.replace(/[^\d]/g, ""))
+        if (firstNum > lastNum) group.tracks.reverse()
     } else {
-        // 如果网页上完全没有列表（比如单部电影），就当做单集处理
-        group.tracks.push({
-            name: '播放本集',
-            ext: { url: url }
-        });
+        group.tracks.push({ name: '播放本集', ext: { url: url, referer: url } })
     }
-
     return jsonify({ list: [group] })
 }
 
-// 4. 获取真实播放链接 (修复无法播放的问题)
+// 4. 获取播放链接（核心修复：增加Referer伪装）
 async function getPlayinfo(ext) {
     ext = argsify(ext)
-    let url = ext.url
-    const { data } = await $fetch.get(url, { headers })
-    const $ = cheerio.load(data)
+    const episodeUrl = ext.url
+    const { data } = await $fetch.get(episodeUrl, { headers: { 'User-Agent': UA, 'Referer': SITE + '/' } })
     
-    let player = ""
+    let realUrl = ""
 
-    // 方案A：直接抓取源码中藏在配置信息里的最纯净的 .m3u8 源（效率最高，播放最快）
-    let match = data.match(/"contentUrl"\s*:\s*"(https?:\/\/[^"]+\.(m3u8|mp4)[^"]*)"/i);
-    if (match && match[1]) {
-        player = match[1];
+    // 尝试直接从源码中提取 m3u8（这是最稳的方式）
+    let m3u8Match = data.match(/"contentUrl"\s*:\s*"(https?:\/\/[^"]+\.m3u8[^"]*)"/i)
+    if (m3u8Match) {
+        realUrl = m3u8Match[1]
     }
 
-    // 方案B：如果源码没有，去解析页面中的内部加密播放器代码
-    if (!player) {
-        let iframeSrc = $('#pembed iframe, .playvideo iframe').attr('src');
-        if (iframeSrc && iframeSrc.includes('/jw-player/')) {
-            let base64Param = iframeSrc.split('/jw-player/')[1];
-            if (base64Param) {
-                try {
-                    let decoded = decodeURIComponent(escape(atob(base64Param)));
-                    let jwConfig = JSON.parse(decoded);
-                    if (jwConfig.url) player = jwConfig.url;
-                } catch(e) {}
-            }
+    // 如果没找到，解密下拉菜单里的线路
+    if (!realUrl) {
+        const $ = cheerio.load(data)
+        let base64Code = ""
+        $('select.mirror option').each((_, item) => {
+            let val = $(item).attr('value')
+            if (val && val.length > 50) base64Code = val
+        })
+
+        if (base64Code) {
+            try {
+                let decoded = decodeURIComponent(escape(atob(base64Code)))
+                let innerM3u8 = decoded.match(/https?:\/\/[^"']+\.m3u8[^"']*/i)
+                if (innerM3u8) realUrl = innerM3u8[0]
+            } catch(e) {}
         }
     }
 
-    // 方案C：如果还是没找到，破解旁边的路线切换菜单（.mirror）
-    if (!player) {
-        let options = $('select.mirror option').toArray();
-        for (let item of options) {
-            let val = $(item).attr('value');
-            if (val && val.length > 20) {
-                try {
-                    let decodedHtml = decodeURIComponent(escape(atob(val)));
-                    
-                    // 再次尝试从中提取 m3u8
-                    let m3u8Match = decodedHtml.match(/"contentUrl"\s*:\s*"(https?:\/\/[^"]+\.(m3u8|mp4)[^"]*)"/i);
-                    if (m3u8Match && m3u8Match[1]) {
-                        player = m3u8Match[1];
-                        break;
-                    }
-                    
-                    // 提取里面的 iframe 给解析层
-                    const $$ = cheerio.load(decodedHtml);
-                    let innerIframe = $$('iframe').attr('src');
-                    if (innerIframe && innerIframe.includes('/jw-player/')) {
-                        let base64Param = innerIframe.split('/jw-player/')[1];
-                        let jwConfig = JSON.parse(decodeURIComponent(escape(atob(base64Param))));
-                        if (jwConfig.url) { player = jwConfig.url; break; }
-                    } else if (innerIframe) {
-                        player = innerIframe; 
-                        break; 
-                    }
-                } catch(e) {}
-            }
-        }
+    // 关键：构建骗过服务器的请求头
+    const playHeaders = {
+        'User-Agent': UA,
+        'Referer': episodeUrl, // 必须是当前这一集的网址
+        'Origin': SITE,
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
     }
 
     return jsonify({
-        urls: [ player ],
-        headers: [ headers ],
+        urls: [ realUrl ],
+        headers: playHeaders  // 注意：这里不再用数组包裹
     })
 }
 
-// 5. 搜索功能
+// 5. 搜索
 async function search(ext) {
     ext = argsify(ext)
-    let cards = [];
-    let text = encodeURIComponent(ext.text)
-    let page = ext.page || 1
-    
-    let url = appConfig.site + `/page/${page}/?s=${text}`
-    if (page === 1) {
-        url = appConfig.site + `/?s=${text}`
-    }
-    
-    const { data } = await $fetch.get(url, { headers })
+    const url = SITE + `/?s=${encodeURIComponent(ext.text)}`
+    const { data } = await $fetch.get(url, { headers: { 'User-Agent': UA } })
     const $ = cheerio.load(data)
+    let cards = []
 
     $('article.bs').each((_, each) => {
-        const path = $(each).find('a').attr('href')
-        if (path) {
-            const ep = $(each).find('.epx').text().trim()
-            const subDub = $(each).find('.sb').text().trim()
-            cards.push({
-                vod_id: path,
-                vod_name: $(each).find('.tt h2').text().trim(),
-                vod_pic: $(each).find('img').attr('src'),
-                vod_remarks: ep + (subDub ? ` | ${subDub}` : ''),
-                ext: {
-                    url: path.startsWith('http') ? path : appConfig.site + path,
-                },
-            })
-        }
+        cards.push({
+            vod_id: $(each).find('a').attr('href'),
+            vod_name: $(each).find('.tt h2').text().trim(),
+            vod_pic: $(each).find('img').attr('src'),
+            ext: { url: $(each).find('a').attr('href') }
+        })
     })
-
     return jsonify({ list: cards })
 }
