@@ -1,6 +1,6 @@
 const cheerio = createCheerio();
 
-// === 1. 基础配置 ===
+// === 1. 基础全局配置 ===
 let $config = argsify($config_str);
 const SITE = $config.site || "https://animotvslash.org";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
@@ -25,7 +25,7 @@ async function getConfig() {
     return jsonify(appConfig);
 }
 
-// === 3. 获取视频列表 ===
+// === 3. 获取视频列表（带翻页） ===
 async function getCards(ext) {
     ext = argsify(ext);
     let cards = [];
@@ -55,7 +55,7 @@ async function getCards(ext) {
     return jsonify({ list: cards });
 }
 
-// === 4. 获取剧集列表 (安全提取版) ===
+// === 4. 获取剧集列表 (安全提取与排序) ===
 async function getTracks(ext) {
     const { url } = argsify(ext);
     const { data } = await $fetch.get(url, { headers: baseHeaders });
@@ -80,7 +80,7 @@ async function getTracks(ext) {
             }
         });
         
-        // 安全倒序检查：防崩溃写法
+        // 安全倒序检查
         try {
             if (group.tracks.length > 1) {
                 let firstNum = parseInt(group.tracks[0].name.replace(/[^\d]/g, "") || "0");
@@ -97,42 +97,42 @@ async function getTracks(ext) {
     return jsonify({ list: [group] });
 }
 
-// === 5. 获取播放链接 (XPTV 安全嗅探版) ===
+// === 5. 获取播放链接 (XPTV 终极混合提取版) ===
 async function getPlayinfo(ext) {
     ext = argsify(ext);
     const { data } = await $fetch.get(ext.url, { headers: baseHeaders });
     const $ = cheerio.load(data);
     
     let playUrl = "";
-    let parseMode = 1; // 1为嗅探模式
+    let parseMode = 1; // 1为开启 XPTV 嗅探模式
 
-    // 1. 尝试找最稳的 Moon(Filemoon) 嗅探路线
-    let options = $('select.mirror option').toArray();
-    for (let item of options) {
-        let val = $(item).attr('value');
-        let text = $(item).text().toLowerCase();
-        
-        if (val && val.length > 20 && text.includes('moon')) {
-            try {
-                // 安全解密 base64，兼顾不同环境
-                let decoded = "";
-                if (typeof atob === 'function') {
-                    decoded = decodeURIComponent(escape(atob(val)));
-                } else if (typeof base64decode === 'function') {
-                    decoded = unescape(base64decode(val));
-                }
-                
-                // 用正则提取 iframe 的 src，不使用 cheerio.load 防卡死
-                let match = decoded.match(/src=["'](.*?)["']/i);
-                if (match && match[1]) {
-                    playUrl = match[1];
-                    break;
-                }
-            } catch(e) {}
+    // 优先策略 1：暴力抓取【下载按钮】的链接 (通常是没有防盗链的直通车)
+    let downloadLink = $('.iconx a[href*="dl="], .iconx a[href*="download"]').attr('href');
+    if (downloadLink) {
+        playUrl = downloadLink.startsWith('http') ? downloadLink : SITE + downloadLink;
+    }
+
+    // 优先策略 2：如果没下载链接，找最稳的 Moon(Filemoon) 嗅探路线
+    if (!playUrl) {
+        let options = $('select.mirror option').toArray();
+        for (let item of options) {
+            let val = $(item).attr('value');
+            let text = $(item).text().toLowerCase();
+            
+            if (val && val.length > 20 && text.includes('moon')) {
+                try {
+                    let decoded = typeof atob === 'function' ? decodeURIComponent(escape(atob(val))) : unescape(base64decode(val));
+                    let match = decoded.match(/src=["'](.*?)["']/i);
+                    if (match && match[1]) {
+                        playUrl = match[1];
+                        break;
+                    }
+                } catch(e) {}
+            }
         }
     }
 
-    // 2. 如果没找到，兜底找 Rumble 的直链
+    // 兜底策略 3：如果都没找到，抓取 Rumble 的官方直链
     if (!playUrl) {
         let m3u8Match = data.match(/"contentUrl"\s*:\s*"(https?:\/\/[^"]+\.(m3u8|mp4)[^"]*)"/i);
         if (m3u8Match) {
@@ -141,13 +141,11 @@ async function getPlayinfo(ext) {
         }
     }
 
-    // 3. 安全获取主机域名作为 Referer（绝不使用 new URL 防止崩溃）
+    // 安全构建 Referer，防止 XPTV 崩溃
     let safeReferer = SITE + '/';
     if (playUrl) {
         let hostMatch = playUrl.match(/^https?:\/\/[^\/]+/i);
-        if (hostMatch) {
-            safeReferer = hostMatch[0] + '/';
-        }
+        if (hostMatch) safeReferer = hostMatch[0] + '/';
     }
 
     return jsonify({
@@ -160,7 +158,7 @@ async function getPlayinfo(ext) {
     });
 }
 
-// === 6. 搜索 ===
+// === 6. 搜索功能 ===
 async function search(ext) {
     ext = argsify(ext);
     let text = encodeURIComponent(ext.text);
