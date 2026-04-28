@@ -1,35 +1,47 @@
-// cinebto-xptv-pro.js
+// cinebto-xptv-final.js
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
 
 const BASE = 'https://cinebto.com'
 
-// ============================
-// 代理池（可扩展）
-// ============================
-const PROXY_POOL = [
-  null // 默认直连，可添加多个代理函数
-  // url => 'http://127.0.0.1:7890/' + encodeURIComponent(url)
-]
+// ====== 可选代理（如有需要自行填）======
+// 例: const PROXY = url => 'http://127.0.0.1:7890/' + encodeURIComponent(url)
+const PROXY = null
 
-function getProxy() {
-  return PROXY_POOL[Math.floor(Math.random() * PROXY_POOL.length)]
-}
-
-// ============================
-// 缓存池
-// ============================
+// ====== 简单缓存 ======
 const CACHE = new Map()
-const SPEED_CACHE = new Map()
 
 // ============================
 // 通用请求
 // ============================
-async function safeGet(url) {
+async function safeGet(url, headers = {}) {
   try {
-    const proxy = getProxy()
-    const target = proxy ? proxy(url) : url
+    const target = PROXY ? PROXY(url) : url
+    const u = new URL(url)
+
+    const res = await $http.get(target, {
+      headers: {
+        'User-Agent': UA,
+        Accept: '*/*',
+        Referer: u.origin + '/',
+        ...headers
+      },
+      timeout: 10000
+    })
+
+    return res?.data || ''
+  } catch {
+    return ''
+  }
+}
+
+// ============================
+// m3u8 可用性检测
+// ============================
+async function checkM3U8(url) {
+  try {
+    const target = PROXY ? PROXY(url) : url
 
     const res = await $http.get(target, {
       headers: {
@@ -39,9 +51,9 @@ async function safeGet(url) {
       timeout: 8000
     })
 
-    return res?.data || ''
+    return typeof res?.data === 'string' && res.data.includes('#EXTM3U')
   } catch {
-    return ''
+    return false
   }
 }
 
@@ -59,183 +71,7 @@ function extractIframes(html) {
 }
 
 // ============================
-// m3u8 检测 + 预加载 + 测速
-// ============================
-async function testSpeed(m3u8) {
-  const start = Date.now()
-
-  try {
-    const proxy = getProxy()
-    const target = proxy ? proxy(m3u8) : m3u8
-
-    const res = await $http.get(target, {
-      headers: {
-        'User-Agent': UA,
-        Referer: new URL(m3u8).origin + '/'
-      },
-      timeout: 6000
-    })
-
-    const text = res?.data || ''
-    if (!text.includes('#EXTM3U')) return null
-
-    // 提取 TS
-    const ts = text
-      .split('\n')
-      .filter(l => l && !l.startsWith('#'))[0]
-
-    if (ts) {
-      const tsUrl = ts.startsWith('http')
-        ? ts
-        : new URL(ts, m3u8).href
-
-      const tsTarget = proxy ? proxy(tsUrl) : tsUrl
-
-      // 请求第一个分片测速
-      await $http.get(tsTarget, {
-        headers: {
-          'User-Agent': UA,
-          Referer: new URL(m3u8).origin + '/'
-        },
-        timeout: 6000
-      })
-    }
-
-    const cost = Date.now() - start
-    SPEED_CACHE.set(m3u8, cost)
-
-    return cost
-  } catch {
-    return null
-  }
-}
-
-// ============================
-// m3u8 预加载
-// ============================
-async function preload(m3u8) {
-  try {
-    const proxy = getProxy()
-    const target = proxy ? proxy(m3u8) : m3u8
-
-    const res = await $http.get(target, {
-      headers: {
-        'User-Agent': UA,
-        Referer: new URL(m3u8).origin + '/'
-      },
-      timeout: 8000
-    })
-
-    const text = res?.data || ''
-    if (!text.includes('#EXTM3U')) return false
-
-    const tsList = text
-      .split('\n')
-      .filter(l => l && !l.startsWith('#'))
-      .slice(0, 2)
-
-    await Promise.all(
-      tsList.map(ts => {
-        const tsUrl = ts.startsWith('http')
-          ? ts
-          : new URL(ts, m3u8).href
-
-        const final = proxy ? proxy(tsUrl) : tsUrl
-
-        return $http.get(final, {
-          headers: {
-            'User-Agent': UA,
-            Referer: new URL(m3u8).origin + '/'
-          },
-          timeout: 5000
-        }).catch(() => {})
-      })
-    )
-
-    return true
-  } catch {
-    return false
-  }
-}
-
-// ============================
-// 单线路解析
-// ============================
-async function parseLine(embedUrl) {
-  if (CACHE.has(embedUrl)) return CACHE.get(embedUrl)
-
-  try {
-    const html = await safeGet(embedUrl)
-    if (!html) return null
-
-    const rcp = html.match(/src:\s*['"](\/rcp[^'"]+)/)?.[1]
-    if (!rcp) return null
-
-    const rcpUrl = new URL(rcp, embedUrl).href
-
-    const rcpHtml = await safeGet(rcpUrl)
-    if (!rcpHtml) return null
-
-    const js = rcpHtml.match(/src=['"](.*?prorcp.*?\.js)/)?.[1]
-    if (!js) return null
-
-    const jsUrl = new URL(js, rcpUrl).href
-
-    const jsText = await safeGet(jsUrl)
-    if (!jsText) return null
-
-    const m3u8 =
-      jsText.match(/https?:\/\/[^'"\\]+\.m3u8[^'"\\]*/)?.[0] ||
-      jsText.match(/file:\s*"(https?:\/\/[^"]+)"/)?.[1]
-
-    if (m3u8) CACHE.set(embedUrl, m3u8)
-
-    return m3u8 || null
-  } catch {
-    return null
-  }
-}
-
-// ============================
-// 播放（商业级核心）
-// ============================
-async function play(flag, id) {
-  const lines = id.split('#').map(i => i.split('$')[1] || id)
-
-  // 1️⃣ 并发解析
-  const parsed = (await Promise.all(lines.map(parseLine))).filter(Boolean)
-
-  if (!parsed.length) {
-    return { parse: 1, url: id }
-  }
-
-  // 2️⃣ 并发测速
-  const speeds = await Promise.all(parsed.map(testSpeed))
-
-  const candidates = parsed
-    .map((url, i) => ({ url, speed: speeds[i] || 9999 }))
-    .sort((a, b) => a.speed - b.speed)
-
-  // 3️⃣ 选最快并预加载
-  for (const item of candidates) {
-    const ok = await preload(item.url)
-    if (ok) {
-      return {
-        parse: 0,
-        url: item.url
-      }
-    }
-  }
-
-  // 4️⃣ fallback
-  return {
-    parse: 0,
-    url: candidates[0].url
-  }
-}
-
-// ============================
-// 搜索 / 详情
+// 搜索
 // ============================
 async function search(wd) {
   const html = await safeGet(`${BASE}/?s=${encodeURIComponent(wd)}`)
@@ -256,6 +92,9 @@ async function search(wd) {
   return list
 }
 
+// ============================
+// 详情
+// ============================
 async function detail(id) {
   const html = await safeGet(id)
 
@@ -278,16 +117,104 @@ async function detail(id) {
 }
 
 // ============================
+// 单线路解析
+// ============================
+async function parseLine(embedUrl) {
+  if (CACHE.has(embedUrl)) return CACHE.get(embedUrl)
+
+  try {
+    const embedHtml = await safeGet(embedUrl)
+    if (!embedHtml) return null
+
+    const rcpMatch = embedHtml.match(/src:\s*['"](\/rcp[^'"]+)/)
+    if (!rcpMatch) return null
+
+    const rcpUrl = new URL(rcpMatch[1], embedUrl).href
+
+    const rcpHtml = await safeGet(rcpUrl)
+    if (!rcpHtml) return null
+
+    const jsMatch = rcpHtml.match(/src=['"](.*?prorcp.*?\.js)/)
+    if (!jsMatch) return null
+
+    const jsUrl = new URL(jsMatch[1], rcpUrl).href
+
+    const js = await safeGet(jsUrl)
+    if (!js) return null
+
+    const m3u8 =
+      js.match(/https?:\/\/[^'"\\]+\.m3u8[^'"\\]*/)?.[0] ||
+      js.match(/file:\s*"(https?:\/\/[^"]+)"/)?.[1]
+
+    if (m3u8) {
+      CACHE.set(embedUrl, m3u8)
+    }
+
+    return m3u8 || null
+  } catch {
+    return null
+  }
+}
+
+// ============================
+// 播放（并发 + 校验）
+// ============================
+async function play(flag, id) {
+  const lines = id.split('#').map(i => i.split('$')[1] || id)
+
+  // 并发解析
+  const tasks = lines.map(url => parseLine(url))
+  const results = await Promise.all(tasks)
+
+  // 逐个验证 m3u8
+  for (const m3u8 of results) {
+    if (!m3u8) continue
+
+    const ok = await checkM3U8(m3u8)
+    if (ok) {
+      return {
+        parse: 0,
+        url: m3u8
+      }
+    }
+  }
+
+  // fallback：顺序重试
+  for (const url of lines) {
+    for (let i = 0; i < 2; i++) {
+      const m3u8 = await parseLine(url)
+      if (m3u8 && (await checkM3U8(m3u8))) {
+        return {
+          parse: 0,
+          url: m3u8
+        }
+      }
+    }
+  }
+
+  return {
+    parse: 1,
+    url: id
+  }
+}
+
+// ============================
 // 导出
 // ============================
 export default {
   init: async () => {},
+
   home: async () => ({
     class: [{ type_id: '1', type_name: '电影' }]
   }),
+
   homeVod: async () => [],
+
   category: async () => ({ list: [] }),
+
   search,
+
   detail,
+
   play
 }
