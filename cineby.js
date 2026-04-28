@@ -1,11 +1,9 @@
 /**
- * XPTV Extension — Cineby  v6.0 (最终直链修复版)
- * https://www.cineby.sc
- *
- * 修复说明：
- * 1. 移除了导致 XPTV 崩溃的错误嗅探指令。
- * 2. 引入了 Vidlink, Vidsrc.xyz, Autoembed 三个备用接口。
- * 3. 自动在后台提取 .m3u8 真实视频直链，直接交给 XPTV 播放。
+ * XPTV Extension — Cineby  v7.0 (内核嗅探版)
+ * * 修复说明：
+ * 针对各大接口开启 Cloudflare 防爬虫盾导致脚本被拦截的问题，
+ * 放弃后台静默提取，改为直接返回备用网页，并启用 parse: 1 指令，
+ * 强制交由 XPTV 内置的 WebView 嗅探器进行真人验证和直链抓取。
  */
 
 const cheerio = createCheerio()
@@ -121,7 +119,7 @@ async function getConfig(){
 }
 
 /* ═══════════════════════════════════════════════════════════
-   2. getCards (还原为你原本正常的列表和图片加载逻辑)
+   2. getCards
 ═══════════════════════════════════════════════════════════ */
 async function getCards(ext){
     ext=normalizeExt(ext)
@@ -174,7 +172,7 @@ async function getTracks(ext){
 }
 
 /* ═══════════════════════════════════════════════════════════
-   4. getPlayinfo (核心修复区：在代码里自动提取真实 .m3u8)
+   4. getPlayinfo (核心修复区：移交内核嗅探)
 ═══════════════════════════════════════════════════════════ */
 async function getPlayinfo(ext) {
     ext = argsify(ext)
@@ -193,67 +191,26 @@ async function getPlayinfo(ext) {
         return jsonify({urls:[''],headers:[{}]})
     }
 
-    $utils.toastInfo('正在提取真实视频直链...')
-    let finalM3u8Url = '';
+    $utils.toastInfo('正在启动嗅探...请稍候(受网络影响可能需要几秒钟)')
 
-    // 方案1：从 vidlink.pro 提取
-    try {
-        const vlUrl = kind === MEDIA.TV
-            ? `https://vidlink.pro/tv/${tmdbId}/${seasonId}/${epId}`
-            : `https://vidlink.pro/movie/${tmdbId}`;
-        const {data} = await $fetch.get(vlUrl, {headers: {'User-Agent': UA}});
-        if (data && typeof data === 'string') {
-            const m3u8Match = data.match(/(https?:\/\/[^"'\s]+\.m3u8[^"'\s]*)/i);
-            if (m3u8Match) finalM3u8Url = m3u8Match[1];
-        }
-    } catch(e) {}
-
-    // 方案2：如果失败，从 vidsrc.xyz 提取 iframe 里的直链
-    if (!finalM3u8Url) {
-        try {
-            const xyzUrl = kind === MEDIA.TV
-                ? `https://vidsrc.xyz/embed/tv/${tmdbId}?season=${seasonId}&episode=${epId}`
-                : `https://vidsrc.xyz/embed/movie/${tmdbId}`;
-            const {data} = await $fetch.get(xyzUrl, {headers: {'User-Agent': UA, 'Referer': 'https://vidsrc.xyz/'}});
-            if (data && typeof data === 'string') {
-                const iframeMatch = data.match(/<iframe[^>]+src=["']([^"']+)["']/i);
-                if (iframeMatch) {
-                    let iframeSrc = iframeMatch[1];
-                    if (iframeSrc.startsWith('//')) iframeSrc = 'https:' + iframeSrc;
-                    const {data: iData} = await $fetch.get(iframeSrc, {headers: {'User-Agent': UA, 'Referer': xyzUrl}});
-                    if (iData && typeof iData === 'string') {
-                        const m3u8Match = iData.match(/(https?:\/\/[^"'\s]+\.m3u8[^"'\s]*)/i);
-                        if (m3u8Match) finalM3u8Url = m3u8Match[1];
-                    }
-                }
-            }
-        } catch(e) {}
+    // 挑选出目前防爬虫稍微弱一点、最容易被 XPTV 嗅探到的几个接口
+    let playUrls = []
+    
+    if (kind === MEDIA.TV) {
+        playUrls.push(`https://player.autoembed.cc/embed/tv/${tmdbId}/${seasonId}/${epId}`)
+        playUrls.push(`https://vidlink.pro/tv/${tmdbId}/${seasonId}/${epId}`)
+    } else {
+        playUrls.push(`https://player.autoembed.cc/embed/movie/${tmdbId}`)
+        playUrls.push(`https://vidlink.pro/movie/${tmdbId}`)
     }
 
-    // 方案3：如果还失败，从 autoembed.cc 提取
-    if (!finalM3u8Url) {
-        try {
-            const aeUrl = kind === MEDIA.TV
-                ? `https://player.autoembed.cc/embed/tv/${tmdbId}/${seasonId}/${epId}`
-                : `https://player.autoembed.cc/embed/movie/${tmdbId}`;
-            const {data} = await $fetch.get(aeUrl, {headers: {'User-Agent': UA}});
-            if (data && typeof data === 'string') {
-                const m3u8Match = data.match(/(https?:\/\/[^"'\s]+\.m3u8[^"'\s]*)/i);
-                if (m3u8Match) finalM3u8Url = m3u8Match[1];
-            }
-        } catch(e) {}
-    }
-
-    if (!finalM3u8Url) {
-        $utils.toastError('备用接口均失效，无法获取直链');
-        return jsonify({urls:[''],headers:[{'User-Agent':UA}]});
-    }
-
-    // 提取成功，把最干净的直链发给 XPTV 播放器
+    // ★ 关键操作：不再去扒代码，而是把网址交给 XPTV
+    // parse: 1 代表命令 XPTV 打开自带的隐藏浏览器，去处理网页和真人验证，并自动抓出视频播放
     return jsonify({
-        urls: [finalM3u8Url],
-        headers: [{'User-Agent': UA, 'Origin': 'https://vidlink.pro', 'Referer': 'https://vidlink.pro/'}]
-    });
+        urls: playUrls,
+        parse: 1, 
+        headers: [{'User-Agent': UA}]
+    })
 }
 
 /* ═══════════════════════════════════════════════════════════
