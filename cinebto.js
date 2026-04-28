@@ -1,219 +1,293 @@
-/**
- * XPTV Extension — Cineb.to
- * https://cinebto.com
- * * 架构说明：
- * 1. 列表与搜索：直连高效 JSON 数据库，秒出封面与数据。
- * 2. 播放引擎：使用 Vidking + Vidlink 双重无加密源，配合 parse:1 唤醒 XPTV 内置嗅探器直接抓取直链。
- */
+// cinebto-xptv-pro.js
 
-const cheerio = createCheerio()
+const UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
 
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+const BASE = 'https://cinebto.com'
 
-const BASE    = 'https://cinebto.com'
-const DB_BASE = 'https://db.videasy.net/3'
-const IMG_BASE = 'https://image.tmdb.org/t/p'
-
-const HEADERS = {
-    'User-Agent':      UA,
-    'Accept':          'application/json, text/plain, */*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Origin':          BASE,
-    'Referer':         BASE + '/',
-    'Sec-Fetch-Dest':  'empty',
-    'Sec-Fetch-Mode':  'cors',
-    'Sec-Fetch-Site':  'cross-site',
-}
-
-const MEDIA = { MOVIE: 'movie', TV: 'tv' }
-
-const MOVIE_GENRES = {
-    28:'Action', 12:'Adventure', 16:'Animation', 35:'Comedy', 80:'Crime',
-    99:'Documentary', 18:'Drama', 10751:'Family', 14:'Fantasy', 36:'History',
-    27:'Horror', 10402:'Music', 9648:'Mystery', 10749:'Romance', 878:'Sci-Fi',
-    10770:'TV Movie', 53:'Thriller', 10752:'War', 37:'Western',
-}
-const TV_GENRES = {
-    10759:'Action & Adventure', 16:'Animation', 35:'Comedy', 80:'Crime',
-    99:'Documentary', 18:'Drama', 10751:'Family', 10762:'Kids', 9648:'Mystery',
-    10763:'News', 10764:'Reality', 10765:'Sci-Fi & Fantasy', 10766:'Soap',
-    10767:'Talk', 10768:'War & Politics', 37:'Western',
-}
-const SORT_OPTIONS = [
-    { n:'Popular',   v:'popularity.desc'  },
-    { n:'Top Rated', v:'vote_average.desc' },
-    { n:'Latest',    v:'release_date.desc' },
+// ============================
+// 代理池（可扩展）
+// ============================
+const PROXY_POOL = [
+  null // 默认直连，可添加多个代理函数
+  // url => 'http://127.0.0.1:7890/' + encodeURIComponent(url)
 ]
 
-// 导航栏分类标签
-const TABS = [
-    { name:'🎬 Movies',    ext:{ kind:MEDIA.MOVIE, sort_by:'popularity.desc',  page:1 } },
-    { name:'📺 TV Shows',  ext:{ kind:MEDIA.TV,    sort_by:'popularity.desc',  page:1 } },
-    { name:'⭐ Top Movies', ext:{ kind:MEDIA.MOVIE, sort_by:'vote_average.desc', page:1 } },
-    { name:'🏆 Top TV',    ext:{ kind:MEDIA.TV,    sort_by:'vote_average.desc', page:1 } },
-]
-const appConfig = { ver:1, title:'Cineb', site:BASE, tabs:TABS }
-
-/* ─── 工具函数 ─── */
-function tidy(t){ return String(t||'').replace(/\s+/g,' ').trim() }
-function toImg(path, size){
-    const p=tidy(path); if(!p) return ''
-    if(/^https?:\/\//i.test(p)) return p
-    return IMG_BASE+'/'+size+(p.startsWith('/')?p:'/'+p)
-}
-function pickYear(item){
-    const m=String(item.release_date||item.first_air_date||'').match(/\d{4}/)
-    return m?m[0]:''
-}
-function pickTitle(item,kind){
-    return tidy(kind===MEDIA.TV?(item.name||item.original_name):(item.title||item.original_title))
-}
-function pickGenres(item,kind){
-    const t=kind===MEDIA.TV?TV_GENRES:MOVIE_GENRES
-    return (item.genre_ids||[]).map(id=>t[id]||'').filter(Boolean)
-}
-function buildRemark(item,kind){
-    const parts=[],year=pickYear(item),score=item.vote_average?Number(item.vote_average).toFixed(1):'',gs=pickGenres(item,kind)
-    if(year) parts.push(year); if(score&&score!=='0.0') parts.push('⭐'+score); if(gs.length) parts.push(gs.slice(0,2).join('/'))
-    return parts.join(' · ')
-}
-function makeVodId(kind,id){ return kind+':'+id }
-function parseVodId(v){
-    const p=tidy(v).split(':')
-    return p.length===2?{kind:p[0],id:parseInt(p[1],10)||0}:{kind:'',id:0}
-}
-function mapCard(item,kind){
-    const id=item.id||0,title=pickTitle(item,kind)
-    if(!id||!title) return null
-    return { vod_id:makeVodId(kind,id), vod_name:title, vod_pic:toImg(item.poster_path,'w342'), vod_remarks:buildRemark(item,kind), ext:{kind,id,title,year:pickYear(item)} }
-}
-function buildQuery(p){
-    return Object.keys(p).filter(k=>p[k]!==undefined&&p[k]!==null&&p[k]!=='').map(k=>encodeURIComponent(k)+'='+encodeURIComponent(p[k])).join('&')
-}
-async function fetchJson(url,params){
-    const qs=buildQuery(params||{})
-    const {data}=await $fetch.get(qs?url+'?'+qs:url,{headers:HEADERS})
-    return typeof data==='string'?JSON.parse(data):data
-}
-function buildFilters(ext){
-    const genres=ext.kind===MEDIA.TV?TV_GENRES:MOVIE_GENRES
-    const gv=[{n:'All',v:''}].concat(Object.keys(genres).map(id=>({n:genres[id],v:id})))
-    return [
-        {key:'sort_by',name:'Sort', init:'popularity.desc',value:SORT_OPTIONS},
-        {key:'genre',  name:'Genre',init:'',              value:gv},
-    ]
-}
-function normalizeExt(ext){
-    const n=argsify(ext)
-    n.kind   =n.kind   ||MEDIA.MOVIE
-    n.page   =parseInt(n.page||'1',10)||1
-    n.sort_by=n.sort_by||(n.filters&&n.filters.sort_by)||'popularity.desc'
-    n.genre  =n.genre  ||(n.filters&&n.filters.genre)  ||''
-    return n
+function getProxy() {
+  return PROXY_POOL[Math.floor(Math.random() * PROXY_POOL.length)]
 }
 
-/* ─── 1. 获取配置 ─── */
-async function getConfig(){
-    return jsonify(appConfig)
-}
+// ============================
+// 缓存池
+// ============================
+const CACHE = new Map()
+const SPEED_CACHE = new Map()
 
-/* ─── 2. 获取首页列表 ─── */
-async function getCards(ext){
-    ext=normalizeExt(ext)
-    const params={page:ext.page,language:'en',with_original_language:'en',sort_by:ext.sort_by}
-    if(ext.genre) params.with_genres=ext.genre
-    const endpoint=DB_BASE+'/discover/'+(ext.kind===MEDIA.TV?'tv':'movie')
-    let json={results:[],total_pages:1},list=[]
-    try{
-        json=await fetchJson(endpoint,params)
-        list=(json.results||[]).map(item=>mapCard(item,ext.kind)).filter(Boolean)
-    }catch(e){$print('getCards error: '+e)}
-    return jsonify({list,hasMore:ext.page<(json.total_pages||1),ext:{...ext,page:ext.page+1},filter:buildFilters(ext)})
-}
+// ============================
+// 通用请求
+// ============================
+async function safeGet(url) {
+  try {
+    const proxy = getProxy()
+    const target = proxy ? proxy(url) : url
 
-/* ─── 3. 获取剧集与选集详情 ─── */
-async function getMovieTracks(id){
-    const json=await fetchJson(DB_BASE+'/movie/'+id,{append_to_response:'external_ids',language:'en'})
-    const title=tidy(json.title||json.original_title||''),year=pickYear(json)
-    const imdb=(json.external_ids&&json.external_ids.imdb_id)||''
-    return {list:[{title:title||'Movie',tracks:[{name:year?title+' ('+year+')':(title||'Play'),pan:'',ext:{kind:MEDIA.MOVIE,id:json.id,tmdbId:json.id,imdbId:imdb,title,year}}]}]}
-}
-async function getTvTracks(id){
-    const detail=await fetchJson(DB_BASE+'/tv/'+id,{append_to_response:'external_ids',language:'en'})
-    const title=tidy(detail.name||detail.original_name||''),year=pickYear(detail)
-    const imdb=(detail.external_ids&&detail.external_ids.imdb_id)||''
-    const total=detail.number_of_seasons||0,groups=[]
-    for(let s=1;s<=total;s++){
-        let season
-        try{season=await fetchJson(DB_BASE+'/tv/'+id+'/season/'+s,{language:'en'})}catch(e){$print('season '+s+' error: '+e);continue}
-        const eps=(season.episodes||[]).map(ep=>({
-            name:ep.name?'E'+ep.episode_number+' '+tidy(ep.name):'Episode '+ep.episode_number,
-            pan:'',
-            ext:{kind:MEDIA.TV,id,tmdbId:id,imdbId:imdb,title,year,seasonId:season.season_number,episodeId:ep.episode_number,totalSeasons:total}
-        }))
-        if(eps.length) groups.push({title:season.name||'Season '+season.season_number,tracks:eps})
-    }
-    return {list:groups}
-}
-async function getTracks(ext){
-    ext=argsify(ext)
-    let kind=ext.kind,id=parseInt(ext.id||ext.tmdbId||'0',10)
-    if((!kind||!id)&&ext.vod_id){const p=parseVodId(ext.vod_id);kind=kind||p.kind;id=id||p.id}
-    try{
-        if(kind===MEDIA.MOVIE) return jsonify(await getMovieTracks(id))
-        if(kind===MEDIA.TV)    return jsonify(await getTvTracks(id))
-    }catch(e){$print('getTracks error: '+e)}
-    return jsonify({list:[]})
-}
-
-/* ─── 4. 获取播放链接 (内核双源嗅探) ─── */
-async function getPlayinfo(ext) {
-    ext = argsify(ext)
-
-    if(ext.directUrl) {
-        return jsonify({urls:[ext.directUrl],headers:[{'User-Agent':UA,Referer:BASE+'/'}]})
-    }
-
-    const tmdbId   = ext.tmdbId || ext.id
-    const kind     = ext.kind
-    const seasonId = ext.seasonId  || 1
-    const epId     = ext.episodeId || 1
-
-    if(!tmdbId){
-        $utils.toastError('缺少 TMDB ID，无法播放')
-        return jsonify({urls:[''],headers:[{}]})
-    }
-
-    $utils.toastInfo('启动内核嗅探中...请稍候')
-
-    let playUrls = []
-    
-    // 构造双重备用嗅探源，XPTV会自动尝试提取视频
-    if (kind === 'tv' || kind === MEDIA.TV) {
-        playUrls.push(`https://www.vidking.net/embed/tv/${tmdbId}/${seasonId}/${epId}`)
-        playUrls.push(`https://vidlink.pro/tv/${tmdbId}/${seasonId}/${epId}`)
-    } else {
-        playUrls.push(`https://www.vidking.net/embed/movie/${tmdbId}`)
-        playUrls.push(`https://vidlink.pro/movie/${tmdbId}`)
-    }
-
-    // 指令解析：parse: 1 代表命令 XPTV 打开自带的浏览器执行网页嗅探
-    return jsonify({
-        urls: playUrls,
-        parse: 1, 
-        headers: [{'User-Agent': UA}]
+    const res = await $http.get(target, {
+      headers: {
+        'User-Agent': UA,
+        Referer: new URL(url).origin + '/'
+      },
+      timeout: 8000
     })
+
+    return res?.data || ''
+  } catch {
+    return ''
+  }
 }
 
-/* ─── 5. 搜索功能 ─── */
-async function search(ext){
-    ext=argsify(ext)
-    const keyword=tidy(ext.text||''),page=parseInt(ext.page||'1',10)||1
-    if(!keyword) return jsonify({list:[]})
-    let json={results:[]},list=[]
-    try{
-        json=await fetchJson(DB_BASE+'/search/multi',{query:keyword,page,language:'en',include_adult:'false'})
-        list=(json.results||[]).filter(item=>item.media_type===MEDIA.MOVIE||item.media_type===MEDIA.TV).map(item=>mapCard(item,item.media_type)).filter(Boolean)
-    }catch(e){$print('search error: '+e)}
-    return jsonify({list,hasMore:page<(json.total_pages||1),ext:{text:keyword,page:page+1}})
+// ============================
+// 提取 iframe
+// ============================
+function extractIframes(html) {
+  const set = new Set()
+  const reg = /<iframe[^>]+src="([^"]+)"/g
+  let m
+  while ((m = reg.exec(html))) {
+    set.add(m[1])
+  }
+  return [...set]
+}
+
+// ============================
+// m3u8 检测 + 预加载 + 测速
+// ============================
+async function testSpeed(m3u8) {
+  const start = Date.now()
+
+  try {
+    const proxy = getProxy()
+    const target = proxy ? proxy(m3u8) : m3u8
+
+    const res = await $http.get(target, {
+      headers: {
+        'User-Agent': UA,
+        Referer: new URL(m3u8).origin + '/'
+      },
+      timeout: 6000
+    })
+
+    const text = res?.data || ''
+    if (!text.includes('#EXTM3U')) return null
+
+    // 提取 TS
+    const ts = text
+      .split('\n')
+      .filter(l => l && !l.startsWith('#'))[0]
+
+    if (ts) {
+      const tsUrl = ts.startsWith('http')
+        ? ts
+        : new URL(ts, m3u8).href
+
+      const tsTarget = proxy ? proxy(tsUrl) : tsUrl
+
+      // 请求第一个分片测速
+      await $http.get(tsTarget, {
+        headers: {
+          'User-Agent': UA,
+          Referer: new URL(m3u8).origin + '/'
+        },
+        timeout: 6000
+      })
+    }
+
+    const cost = Date.now() - start
+    SPEED_CACHE.set(m3u8, cost)
+
+    return cost
+  } catch {
+    return null
+  }
+}
+
+// ============================
+// m3u8 预加载
+// ============================
+async function preload(m3u8) {
+  try {
+    const proxy = getProxy()
+    const target = proxy ? proxy(m3u8) : m3u8
+
+    const res = await $http.get(target, {
+      headers: {
+        'User-Agent': UA,
+        Referer: new URL(m3u8).origin + '/'
+      },
+      timeout: 8000
+    })
+
+    const text = res?.data || ''
+    if (!text.includes('#EXTM3U')) return false
+
+    const tsList = text
+      .split('\n')
+      .filter(l => l && !l.startsWith('#'))
+      .slice(0, 2)
+
+    await Promise.all(
+      tsList.map(ts => {
+        const tsUrl = ts.startsWith('http')
+          ? ts
+          : new URL(ts, m3u8).href
+
+        const final = proxy ? proxy(tsUrl) : tsUrl
+
+        return $http.get(final, {
+          headers: {
+            'User-Agent': UA,
+            Referer: new URL(m3u8).origin + '/'
+          },
+          timeout: 5000
+        }).catch(() => {})
+      })
+    )
+
+    return true
+  } catch {
+    return false
+  }
+}
+
+// ============================
+// 单线路解析
+// ============================
+async function parseLine(embedUrl) {
+  if (CACHE.has(embedUrl)) return CACHE.get(embedUrl)
+
+  try {
+    const html = await safeGet(embedUrl)
+    if (!html) return null
+
+    const rcp = html.match(/src:\s*['"](\/rcp[^'"]+)/)?.[1]
+    if (!rcp) return null
+
+    const rcpUrl = new URL(rcp, embedUrl).href
+
+    const rcpHtml = await safeGet(rcpUrl)
+    if (!rcpHtml) return null
+
+    const js = rcpHtml.match(/src=['"](.*?prorcp.*?\.js)/)?.[1]
+    if (!js) return null
+
+    const jsUrl = new URL(js, rcpUrl).href
+
+    const jsText = await safeGet(jsUrl)
+    if (!jsText) return null
+
+    const m3u8 =
+      jsText.match(/https?:\/\/[^'"\\]+\.m3u8[^'"\\]*/)?.[0] ||
+      jsText.match(/file:\s*"(https?:\/\/[^"]+)"/)?.[1]
+
+    if (m3u8) CACHE.set(embedUrl, m3u8)
+
+    return m3u8 || null
+  } catch {
+    return null
+  }
+}
+
+// ============================
+// 播放（商业级核心）
+// ============================
+async function play(flag, id) {
+  const lines = id.split('#').map(i => i.split('$')[1] || id)
+
+  // 1️⃣ 并发解析
+  const parsed = (await Promise.all(lines.map(parseLine))).filter(Boolean)
+
+  if (!parsed.length) {
+    return { parse: 1, url: id }
+  }
+
+  // 2️⃣ 并发测速
+  const speeds = await Promise.all(parsed.map(testSpeed))
+
+  const candidates = parsed
+    .map((url, i) => ({ url, speed: speeds[i] || 9999 }))
+    .sort((a, b) => a.speed - b.speed)
+
+  // 3️⃣ 选最快并预加载
+  for (const item of candidates) {
+    const ok = await preload(item.url)
+    if (ok) {
+      return {
+        parse: 0,
+        url: item.url
+      }
+    }
+  }
+
+  // 4️⃣ fallback
+  return {
+    parse: 0,
+    url: candidates[0].url
+  }
+}
+
+// ============================
+// 搜索 / 详情
+// ============================
+async function search(wd) {
+  const html = await safeGet(`${BASE}/?s=${encodeURIComponent(wd)}`)
+
+  const list = []
+  const reg =
+    /<a href="(https:\/\/cinebto\.com\/[^"]+)"[^>]*>\s*<img[^>]*src="([^"]+)"[^>]*alt="([^"]+)"/g
+
+  let m
+  while ((m = reg.exec(html))) {
+    list.push({
+      vod_id: m[1],
+      vod_name: m[3],
+      vod_pic: m[2]
+    })
+  }
+
+  return list
+}
+
+async function detail(id) {
+  const html = await safeGet(id)
+
+  const title = html.match(/<h1[^>]*>(.*?)<\/h1>/)?.[1] || ''
+  const pic = html.match(/poster[^>]+src="([^"]+)"/)?.[1] || ''
+
+  const iframes = extractIframes(html)
+
+  const playList = iframes
+    .map((u, i) => `线路${i + 1}$${u}`)
+    .join('#')
+
+  return {
+    vod_id: id,
+    vod_name: title,
+    vod_pic: pic,
+    vod_play_from: 'cinebto',
+    vod_play_url: playList
+  }
+}
+
+// ============================
+// 导出
+// ============================
+export default {
+  init: async () => {},
+  home: async () => ({
+    class: [{ type_id: '1', type_name: '电影' }]
+  }),
+  homeVod: async () => [],
+  category: async () => ({ list: [] }),
+  search,
+  detail,
+  play
 }
