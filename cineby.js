@@ -1,9 +1,6 @@
 /**
- * XPTV Extension — Cineby  v7.0 (内核嗅探版)
- * * 修复说明：
- * 针对各大接口开启 Cloudflare 防爬虫盾导致脚本被拦截的问题，
- * 放弃后台静默提取，改为直接返回备用网页，并启用 parse: 1 指令，
- * 强制交由 XPTV 内置的 WebView 嗅探器进行真人验证和直链抓取。
+ * XPTV Extension — Cineby  v8.0 (Vidking 终极嗅探版)
+ * https://www.cineby.sc
  */
 
 const cheerio = createCheerio()
@@ -172,7 +169,7 @@ async function getTracks(ext){
 }
 
 /* ═══════════════════════════════════════════════════════════
-   4. getPlayinfo (核心修复区：移交内核嗅探)
+   4. getPlayinfo (Vidking 核心嗅探播放)
 ═══════════════════════════════════════════════════════════ */
 async function getPlayinfo(ext) {
     ext = argsify(ext)
@@ -186,28 +183,24 @@ async function getPlayinfo(ext) {
     const seasonId = ext.seasonId  || 1
     const epId     = ext.episodeId || 1
 
-    if(!tmdbId||!kind){
-        $utils.toastError('缺少 TMDB ID')
+    if(!tmdbId){
+        $utils.toastError('缺少影片 ID')
         return jsonify({urls:[''],headers:[{}]})
     }
 
-    $utils.toastInfo('正在启动嗅探...请稍候(受网络影响可能需要几秒钟)')
+    $utils.toastInfo('正在通过 Vidking 嗅探视频流，请稍等...')
 
-    // 挑选出目前防爬虫稍微弱一点、最容易被 XPTV 嗅探到的几个接口
-    let playUrls = []
-    
-    if (kind === MEDIA.TV) {
-        playUrls.push(`https://player.autoembed.cc/embed/tv/${tmdbId}/${seasonId}/${epId}`)
-        playUrls.push(`https://vidlink.pro/tv/${tmdbId}/${seasonId}/${epId}`)
+    // 根据类型生成 Vidking 网址
+    let vidkingUrl = ""
+    if (kind === 'tv' || kind === MEDIA.TV) {
+        vidkingUrl = `https://www.vidking.net/embed/tv/${tmdbId}/${seasonId}/${epId}`
     } else {
-        playUrls.push(`https://player.autoembed.cc/embed/movie/${tmdbId}`)
-        playUrls.push(`https://vidlink.pro/movie/${tmdbId}`)
+        vidkingUrl = `https://www.vidking.net/embed/movie/${tmdbId}`
     }
 
-    // ★ 关键操作：不再去扒代码，而是把网址交给 XPTV
-    // parse: 1 代表命令 XPTV 打开自带的隐藏浏览器，去处理网页和真人验证，并自动抓出视频播放
+    // 开启 parse: 1 让 XPTV 自动处理网页提取视频
     return jsonify({
-        urls: playUrls,
+        urls: [vidkingUrl],
         parse: 1, 
         headers: [{'User-Agent': UA}]
     })
