@@ -1,16 +1,10 @@
 /**
- * XPTV Extension — Cineby  v5.0
+ * XPTV Extension — Cineby  v5.1 (修复版)
  * https://www.cineby.sc
  *
- * ★ 播放修复（彻底方案）
- * 使用 vidsrc.net 多步提取链路直接获取 m3u8：
- * Step 1: GET /embed/movie?tmdb={id}
- * 解析 .serversList .server[data-hash] 获取服务器列表
- * Step 2: GET https://{baseDom}/rcp/{dataHash}
- * 正则提取 src:'...' 获取 RCP URL
- * Step 3a: 若为普通 URL → 直接跟进取 m3u8
- * Step 3b: 若为 prorcp → 取 prorcp 页 → 找 JS 文件
- * → 提取解密 key → RC4 解密 → 得到真实 m3u8
+ * ★ 播放修复
+ * 已移除失效的 vidsrc.net 强行解密逻辑。
+ * 采用备用无加密接口，并利用 XPTV 的 parse:1 内置嗅探功能直接抓取。
  */
 
 const cheerio = createCheerio()
@@ -118,40 +112,6 @@ function normalizeExt(ext){
     return n
 }
 
-/* ─── RC4 解密（vidsrc prorcp 使用）─────────────────────────── */
-function rc4Decrypt(key, data) {
-    const keyBytes = []
-    for (let i = 0; i < key.length; i++) keyBytes.push(key.charCodeAt(i))
-
-    const b64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/='
-    let dataBytes = []
-    for (let i = 0; i < data.length; i += 4) {
-        const c1=b64chars.indexOf(data[i]),c2=b64chars.indexOf(data[i+1])
-        const c3=b64chars.indexOf(data[i+2]),c4=b64chars.indexOf(data[i+3])
-        dataBytes.push((c1<<2)|(c2>>4))
-        if(c3!==64) dataBytes.push(((c2&15)<<4)|(c3>>2))
-        if(c4!==64) dataBytes.push(((c3&3)<<6)|c4)
-    }
-
-    const S=[]
-    for(let i=0;i<256;i++) S[i]=i
-    let j=0
-    for(let i=0;i<256;i++){
-        j=(j+S[i]+keyBytes[i%keyBytes.length])%256
-        ;[S[i],S[j]]=[S[j],S[i]]
-    }
-
-    let i2=0,j2=0
-    const result=[]
-    for(let k=0;k<dataBytes.length;k++){
-        i2=(i2+1)%256; j2=(j2+S[i2])%256
-        ;[S[i2],S[j2]]=[S[j2],S[i2]]
-        result.push(dataBytes[k]^S[(S[i2]+S[j2])%256])
-    }
-
-    return result.map(b=>String.fromCharCode(b)).join('')
-}
-
 /* ═══════════════════════════════════════════════════════════
    1. getConfig
 ═══════════════════════════════════════════════════════════ */
@@ -213,246 +173,8 @@ async function getTracks(ext){
 }
 
 /* ═══════════════════════════════════════════════════════════
-   4. getPlayinfo
+   4. getPlayinfo (已简化修复)
 ═══════════════════════════════════════════════════════════ */
-async function safeGet(url, hdrs) {
-    try {
-        const {data} = await $fetch.get(url, {headers: hdrs||{
-            'User-Agent': UA,
-            'Accept': 'text/html,*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-        }})
-        return typeof data === 'string' ? data : JSON.stringify(data)
-    } catch(e) {
-        $print('safeGet failed: '+url+' err: '+e)
-        return ''
-    }
-}
-
-function extractDirect(html) {
-    const pats = [
-        /["'`](https?:\/\/[^"'`\s]+\.m3u8(?:\?[^"'`\s]*)?)/i,
-        /["'`](https?:\/\/[^"'`\s]+\.mp4(?:\?[^"'`\s]*)?)/i,
-        /file\s*:\s*["'`](https?:\/\/[^"'`\s,)]+)/i,
-        /source\s*:\s*["'`](https?:\/\/[^"'`\s,)]+)/i,
-        /src\s*:\s*["'`](https?:\/\/[^"'`\s,)]+\.(?:m3u8|mp4)[^"'`\s,)]*)/i,
-    ]
-    for(const re of pats){
-        const m=html.match(re)
-        if(m&&m[1]&&!/poster|thumb|image|logo|banner/i.test(m[1])) return m[1]
-    }
-    return ''
-}
-
-function URL2(url) {
-    this.href=url
-    const m=url.match(/^([a-zA-Z]+:)?\/\/([^\/?#:]+)?(:\d+)?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/)
-    this.hostname=m?m[2]||'':''
-    this.origin=(m?m[1]||'https:':'https:')+'//'+this.hostname
-}
-
-async function handleProrcp(proUrl, baseDom) {
-    $print('handleProrcp: '+proUrl)
-    const referer = 'https://'+baseDom+'/'
-    const proHtml = await safeGet(proUrl, {'User-Agent':UA,'Referer':referer,'Accept':'text/html,*/*'})
-    if(!proHtml) return ''
-
-    const $pro = cheerio.load(proHtml)
-    let jsUrl = ''
-    $pro('script[src]').each((_,el)=>{
-        const src=$pro(el).attr('src')||''
-        if(src&&!src.includes('cpt.js')){
-            jsUrl=src.startsWith('http')?src:'https://'+baseDom+src
-        }
-    })
-
-    if(!jsUrl) {
-        const jm=proHtml.match(/script\s+src=["']([^"']+\.js[^"']*)["']/i)
-        if(jm) jsUrl=jm[1].startsWith('http')?jm[1]:'https://'+baseDom+jm[1]
-    }
-    if(!jsUrl) return ''
-
-    const jsCode = await safeGet(jsUrl, {'User-Agent':UA,'Referer':proUrl,'Accept':'*/*'})
-    if(!jsCode) return ''
-
-    const fnMatch = jsCode.match(/(\w+)\s*=\s*(\w+)\s*\(\s*\w+\s*,\s*['"]([^'"]+)['"]\s*\)/)
-    if(!fnMatch) return ''
-    const decryptKey = fnMatch[3]
-
-    let encData = ''
-    const edm = proHtml.match(/(?:encData|encoded|data)\s*=\s*['"]([A-Za-z0-9+/=]+)['"]/)
-    if(edm) encData=edm[1]
-    if(!encData){
-        const dh=$pro('[data-hash]').first().attr('data-hash')||''
-        encData=dh
-    }
-    if(!encData) return ''
-
-    try {
-        const decrypted = rc4Decrypt(decryptKey, encData)
-        const m3u8m = decrypted.match(/(https?:\/\/[^\s"']+\.m3u8[^\s"']*)/)
-        if(m3u8m) return m3u8m[1]
-        if(/^https?:\/\//.test(decrypted.trim())) return decrypted.trim()
-    } catch(e) {}
-    return ''
-}
-
-// 修复新增链路 1：vidlink.pro (当前最稳定)
-async function extractVidlink(tmdbId, kind, seasonId, epId) {
-    const isTV = kind === MEDIA.TV
-    const s = seasonId||1, e = epId||1
-    const embedUrl = isTV
-        ? 'https://vidlink.pro/tv/'+tmdbId+'/'+s+'/'+e
-        : 'https://vidlink.pro/movie/'+tmdbId
-
-    $print('vidlink embed: '+embedUrl)
-    const html = await safeGet(embedUrl, {'User-Agent':UA,'Referer':'https://vidlink.pro/','Accept':'text/html,*/*'})
-    if(!html) return {url:'',referer:''}
-
-    const direct = extractDirect(html)
-    if(direct) return {url:direct,referer:embedUrl}
-
-    const $e=cheerio.load(html)
-    const iframeSrc=$e('iframe').first().attr('src')||''
-    if(iframeSrc){
-        const abs=iframeSrc.startsWith('http')?iframeSrc:'https://vidlink.pro'+iframeSrc
-        const iHtml=await safeGet(abs,{'User-Agent':UA,'Referer':embedUrl,'Accept':'text/html,*/*'})
-        const d2=extractDirect(iHtml||'')
-        if(d2) return {url:d2,referer:abs}
-    }
-    return {url:'',referer:''}
-}
-
-// 修复新增链路 2：autoembed.cc
-async function extractAutoembed(tmdbId, kind, seasonId, epId) {
-    const isTV = kind === MEDIA.TV
-    const s = seasonId||1, e = epId||1
-    const embedUrl = isTV
-        ? 'https://tom.autoembed.cc/tv/'+tmdbId+'/'+s+'/'+e
-        : 'https://tom.autoembed.cc/movie/'+tmdbId
-
-    $print('autoembed embed: '+embedUrl)
-    const html = await safeGet(embedUrl, {'User-Agent':UA,'Referer':'https://tom.autoembed.cc/','Accept':'text/html,*/*'})
-    if(!html) return {url:'',referer:''}
-
-    const direct = extractDirect(html)
-    if(direct) return {url:direct,referer:embedUrl}
-
-    const $e=cheerio.load(html)
-    const iframeSrc=$e('iframe').first().attr('src')||''
-    if(iframeSrc){
-        const abs=iframeSrc.startsWith('http')?iframeSrc:'https://tom.autoembed.cc'+iframeSrc
-        const iHtml=await safeGet(abs,{'User-Agent':UA,'Referer':embedUrl,'Accept':'text/html,*/*'})
-        const d2=extractDirect(iHtml||'')
-        if(d2) return {url:d2,referer:abs}
-    }
-    return {url:'',referer:''}
-}
-
-async function extractVidsrc(tmdbId, kind, seasonId, epId) {
-    const isTV = kind === MEDIA.TV
-    const s = seasonId||1, e = epId||1
-    const embedUrl = isTV
-        ? 'https://vidsrc.net/embed/tv?tmdb='+tmdbId+'&season='+s+'&episode='+e
-        : 'https://vidsrc.net/embed/movie?tmdb='+tmdbId
-
-    const embedHtml = await safeGet(embedUrl, {'User-Agent': UA,'Referer': 'https://vidsrc.net/','Accept': 'text/html,*/*'})
-    if(!embedHtml) return {url:'', referer:''}
-
-    const $embed = cheerio.load(embedHtml)
-    let baseDom = ''
-    $embed('iframe[src]').each((_,el)=>{
-        const src=$embed(el).attr('src')||''
-        const m=src.match(/^(?:https?:\/\/)?([^/]+)/)
-        if(m&&!baseDom) baseDom=m[1]
-    })
-    if(!baseDom){
-        const bm=embedHtml.match(/(?:src|href)=["']((?:https?:\/\/)?[^"'/]+\/rcp\/)/i)
-        if(bm){const u=new URL2(bm[1]);baseDom=u.hostname}
-    }
-    if(!baseDom){
-        const dm=embedHtml.match(/(?:https?:\/\/)(v\d+\.vidsrc\.\w+|rcp\.\w+\.\w+)/)
-        if(dm) baseDom=dm[1]
-    }
-
-    const servers = []
-    $embed('.serversList .server, [data-hash]').each((_,el)=>{
-        const hash=$embed(el).attr('data-hash')||''
-        const name=$embed(el).text().trim()||'server'
-        if(hash) servers.push({hash,name})
-    })
-
-    if(!servers.length||!baseDom) {
-        const direct=extractDirect(embedHtml)
-        if(direct) return {url:direct,referer:embedUrl}
-        return {url:'',referer:''}
-    }
-
-    for(const srv of servers){
-        const rcpUrl='https://'+baseDom+'/rcp/'+srv.hash
-        const rcpHtml=await safeGet(rcpUrl, {'User-Agent': UA,'Referer': embedUrl,'Accept': 'text/html,*/*'})
-        if(!rcpHtml) continue
-
-        const srcMatch = rcpHtml.match(/src\s*:\s*['"]([^'"]+)['"]/i)
-        if(!srcMatch) {
-            const direct=extractDirect(rcpHtml)
-            if(direct) return {url:direct,referer:rcpUrl}
-            continue
-        }
-
-        const rcpData = srcMatch[1]
-        if(rcpData.startsWith('http')&&!rcpData.includes('prorcp')){
-            const nextHtml=await safeGet(rcpData, {'User-Agent':UA,'Referer':rcpUrl,'Accept':'text/html,*/*'})
-            const direct=extractDirect(nextHtml||'')
-            if(direct) return {url:direct,referer:rcpData}
-
-            if(nextHtml){
-                const $n=cheerio.load(nextHtml)
-                const iframeSrc=$n('iframe').first().attr('src')||''
-                if(iframeSrc){
-                    const absIframe=iframeSrc.startsWith('http')?iframeSrc:'https://'+baseDom+iframeSrc
-                    const iHtml=await safeGet(absIframe,{'User-Agent':UA,'Referer':rcpData,'Accept':'text/html,*/*'})
-                    const d2=extractDirect(iHtml||'')
-                    if(d2) return {url:d2,referer:absIframe}
-                }
-            }
-            continue
-        }
-
-        if(rcpData.includes('prorcp')){
-            const proUrl=rcpData.startsWith('http')?rcpData:'https://'+baseDom+rcpData
-            const m3u8=await handleProrcp(proUrl, baseDom)
-            if(m3u8) return {url:m3u8,referer:'https://'+baseDom+'/'}
-            continue
-        }
-    }
-    return {url:'',referer:''}
-}
-
-async function extractVidsrcXyz(tmdbId, kind, seasonId, epId) {
-    const isTV = kind === MEDIA.TV
-    const s = seasonId||1, e = epId||1
-    const embedUrl = isTV
-        ? 'https://vidsrc.xyz/embed/tv/'+tmdbId+'?season='+s+'&episode='+e
-        : 'https://vidsrc.xyz/embed/movie/'+tmdbId
-
-    const html = await safeGet(embedUrl, {'User-Agent':UA,'Referer':'https://vidsrc.xyz/','Accept':'text/html,*/*'})
-    if(!html) return {url:'',referer:''}
-
-    const direct = extractDirect(html)
-    if(direct) return {url:direct,referer:embedUrl}
-
-    const $e=cheerio.load(html)
-    const iframeSrc=$e('iframe').first().attr('src')||''
-    if(iframeSrc){
-        const abs=iframeSrc.startsWith('http')?iframeSrc:'https://vidsrc.xyz'+iframeSrc
-        const iHtml=await safeGet(abs,{'User-Agent':UA,'Referer':embedUrl,'Accept':'text/html,*/*'})
-        const d2=extractDirect(iHtml||'')
-        if(d2) return {url:d2,referer:abs}
-    }
-    return {url:'',referer:''}
-}
-
 async function getPlayinfo(ext) {
     ext = argsify(ext)
 
@@ -461,56 +183,34 @@ async function getPlayinfo(ext) {
     }
 
     const tmdbId   = ext.tmdbId || ext.id
-    const kind     = ext.kind
+    const kind     = ext.kind === MEDIA.TV ? 'tv' : 'movie'
     const seasonId = ext.seasonId  || 1
     const epId     = ext.episodeId || 1
 
-    if(!tmdbId||!kind){
-        $utils.toastError('Missing tmdb id')
+    if(!tmdbId) {
+        $utils.toastError('缺少 TMDB ID')
         return jsonify({urls:[''],headers:[{}]})
     }
 
-    $utils.toastInfo('Loading stream...')
+    $utils.toastInfo('正在获取播放地址...')
 
-    let result = {url:'', referer:''}
-
-    // ★ 智能多源重试逻辑：优先使用目前最稳定的新源
-    if (!result.url) {
-        try {
-            result = await extractVidlink(tmdbId, kind, seasonId, epId)
-            $print('vidlink result: '+(result.url||'none'))
-        } catch(e) { $print('vidlink error: '+e) }
+    let playUrls = []
+    
+    if (kind === 'tv') {
+        // 剧集接口
+        playUrls.push(`https://vidsrc.cc/v2/embed/tv/${tmdbId}/${seasonId}/${epId}`)
+        playUrls.push(`https://vidlink.pro/tv/${tmdbId}/${seasonId}/${epId}`)
+    } else {
+        // 电影接口
+        playUrls.push(`https://vidsrc.cc/v2/embed/movie/${tmdbId}`)
+        playUrls.push(`https://vidlink.pro/movie/${tmdbId}`)
     }
 
-    if (!result.url) {
-        try {
-            result = await extractAutoembed(tmdbId, kind, seasonId, epId)
-            $print('autoembed result: '+(result.url||'none'))
-        } catch(e) { $print('autoembed error: '+e) }
-    }
-
-    if (!result.url) {
-        try {
-            result = await extractVidsrc(tmdbId, kind, seasonId, epId)
-            $print('vidsrc.net result: '+(result.url||'none'))
-        } catch(e) { $print('vidsrc.net error: '+e) }
-    }
-
-    if (!result.url) {
-        try {
-            result = await extractVidsrcXyz(tmdbId, kind, seasonId, epId)
-            $print('vidsrc.xyz result: '+(result.url||'none'))
-        } catch(e) { $print('vidsrc.xyz error: '+e) }
-    }
-
-    if(!result.url){
-        $utils.toastError('无法获取播放地址，请检查网络或代理')
-        return jsonify({urls:[''],headers:[{'User-Agent':UA}]})
-    }
-
+    // 重点：开启 parse: 1 让 XPTV 接管网页并嗅探视频
     return jsonify({
-        urls:    [result.url],
-        headers: [{'User-Agent':UA, 'Referer':result.referer||BASE+'/'}],
+        urls: playUrls,
+        parse: 1, 
+        headers: [{'User-Agent': UA}]
     })
 }
 
