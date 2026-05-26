@@ -198,8 +198,16 @@ async function fetchText(url) {
   const { data } = await $fetch.get(url, {
     headers: Object.assign({}, HEADERS, { Referer: `${BASE}/zh` }),
   });
-  if (typeof data === "string") return data;
-  return JSON.stringify(data || "");
+  
+  // 将获取到的内容统一转为字符串以便匹配
+  const htmlText = typeof data === "string" ? data : JSON.stringify(data || "");
+  
+  // 拦截并自动跳转 Safari 进行人机验证
+  if (htmlText.includes('Just a moment...')) {
+    $utils.openSafari(url, UA);
+  }
+  
+  return htmlText;
 }
 
 function parseCards(html) {
