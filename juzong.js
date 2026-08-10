@@ -11,7 +11,7 @@ const headers = {
   'Referer': `${appConfig.site}/`,
 }
 
-const $config = argsify($config_str || '{}')
+const $config = argsify(typeof $config_str === 'string' ? $config_str : '{}')
 const cheerio = createCheerio()
 
 function parseJson(input, fallback = {}) {
@@ -31,8 +31,11 @@ async function getHtml(url) {
 
 function getConfig() {
   return jsonify({
+    name: appConfig.name,
     site: appConfig.site,
     title: appConfig.name,
+    host: appConfig.site,
+    version: 1,
     tabs: [
       { name: '电影', ext: { url: '/vodshow/1-----------/' } },
       { name: '剧集', ext: { url: '/vodshow/2-----------/' } },
@@ -81,7 +84,7 @@ async function getTracks(ext) {
     name: `线路${i + 1}`,
     tracks: grouped[key],
   }))
-  return jsonify({ list: groups })
+  return jsonify({ list: groups, groups })
 }
 
 async function getPlayinfo(ext) {
