@@ -31,11 +31,9 @@ async function getHtml(url) {
 
 function getConfig() {
   return jsonify({
-    name: appConfig.name,
+    ver: 1,
     site: appConfig.site,
     title: appConfig.name,
-    host: appConfig.site,
-    version: 1,
     tabs: [
       { name: '电影', ext: { url: '/vodshow/1-----------/' } },
       { name: '剧集', ext: { url: '/vodshow/2-----------/' } },
@@ -81,10 +79,14 @@ async function getTracks(ext) {
     grouped[key].push({ name: $(a).text().trim() || '播放', url: abs(href) })
   })
   const groups = Object.keys(grouped).map((key, i) => ({
-    name: `线路${i + 1}`,
-    tracks: grouped[key],
+    title: `线路${i + 1}`,
+    tracks: grouped[key].map(track => ({
+      name: track.name,
+      pan: '',
+      ext: { url: track.url },
+    })),
   }))
-  return jsonify({ list: groups, groups })
+  return jsonify({ list: groups })
 }
 
 async function getPlayinfo(ext) {
@@ -92,13 +94,13 @@ async function getPlayinfo(ext) {
   const html = await getHtml(opt.url || opt.playUrl || opt.vod_id)
   // MacCMS 有时把 player_data 放在单行 script 中，不能要求分号后必须换行。
   const match = html.match(/var\s+player_data\s*=\s*(\{[\s\S]*?\})\s*;/)
-  if (!match) return jsonify({ url: '' })
+  if (!match) return jsonify({ urls: [], headers: [headers] })
   let data = parseJson(match[1], {})
   let url = data.url || ''
   if (data.encrypt === 1) url = decodeURIComponent(url)
   // juzongx 等线路返回站点私有加密串，不能当作可播放 URL；让用户切换到可解析线路。
   if (!/^https?:\/\//i.test(url)) url = ''
-  return jsonify({ url, header: headers })
+  return jsonify({ urls: url ? [url] : [], headers: [headers] })
 }
 
 async function search(ext) {
