@@ -1,8 +1,6 @@
 /**
- * Miruro.tv XPTV Extension
- * 基于 Miruro 加密管道协议 (/api/secure/pipe) 实现
- * GET 请求: base64url 编码请求对象
- * 响应: 可能经过 x-obfuscated 头标识的混淆 + gzip 压缩
+ * Miruro.tv XPTV Extension v3
+ * 修复: version字段(null→undefined)、x-obfuscated处理、错误调试、cookie初始化
  */
 
 const appConfig = {
@@ -10,13 +8,14 @@ const appConfig = {
   title: 'Miruro',
   site: 'https://www.miruro.tv',
   tabs: [
-    { name: '热门', ext: { url: 'trending' } },
-    { name: '流行', ext: { url: 'popular' } },
-    { name: '新番', ext: { url: 'recent' } },
-    { name: '即将上映', ext: { url: 'upcoming' } },
-    { name: '电影', ext: { url: 'filter', format: 'MOVIE' } },
-    { name: 'TV', ext: { url: 'filter', format: 'TV' } },
-    { name: 'OVA', ext: { url: 'filter', format: 'OVA' } },
+    { name: '热门趋势', ext: { url: 'browse', sort: 'TRENDING_DESC' } },
+    { name: '最流行', ext: { url: 'search', sort: 'POPULARITY_DESC' } },
+    { name: '正在播出', ext: { url: 'browse', sort: 'TRENDING_DESC', status: 'RELEASING' } },
+    { name: '即将上映', ext: { url: 'browse', sort: 'POPULARITY_DESC', status: 'NOT_YET_RELEASED' } },
+    { name: '高分', ext: { url: 'search', sort: 'AVERAGE_SCORE_DESC' } },
+    { name: '电影', ext: { url: 'browse', sort: 'POPULARITY_DESC', format: 'MOVIE' } },
+    { name: 'TV', ext: { url: 'browse', sort: 'POPULARITY_DESC', format: 'TV' } },
+    { name: 'OVA', ext: { url: 'browse', sort: 'POPULARITY_DESC', format: 'OVA' } },
   ],
 };
 
@@ -28,14 +27,13 @@ const baseHeaders = {
   'Accept-Language': 'en-US,en;q=0.9',
   'Referer': appConfig.site + '/',
   'Origin': appConfig.site,
-  'Sec-Fetch-Dest': 'empty',
-  'Sec-Fetch-Mode': 'cors',
-  'Sec-Fetch-Site': 'same-origin',
 };
 
-// XOR 混淆密钥 (从 VITE_PIPE_OBF_KEY 环境变量获取，十六进制字符串)
-// 如果网站启用了 x-obfuscated:2，需要设置此密钥
-const OBF_KEY = null; // 例如: 'a1b2c3d4...'
+// XOR 混淆密钥 (如网站启用 x-obfuscated:2 需设置十六进制字符串)
+const OBF_KEY = null;
+
+// 调试模式: 出错时返回错误信息卡片
+const DEBUG = true;
 
 function base64urlEncode(str) {
   const bytes = new TextEncoder().encode(str);
@@ -58,71 +56,96 @@ function base64urlDecode(str) {
 }
 
 async function gunzip(data) {
-  if (typeof DecompressionStream !== 'undefined') {
-    const ds = new DecompressionStream('gzip');
-    const stream = new Response(data).body.pipeThrough(ds);
-    const reader = stream.getReader();
-    const chunks = [];
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
+  try {
+    if (typeof DecompressionStream !== 'undefined') {
+      const ds = new DecompressionStream('gzip');
+      const stream = new Response(data).body.pipeThrough(ds);
+      const reader = stream.getReader();
+      const chunks = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      const total = chunks.reduce((acc, c) => acc + c.length, 0);
+      const result = new Uint8Array(total);
+      let offset = 0;
+      for (const c of chunks) {
+        result.set(c, offset);
+        offset += c.length;
+      }
+      return new TextDecoder().decode(result);
     }
-    const total = chunks.reduce((acc, c) => acc + c.length, 0);
-    const result = new Uint8Array(total);
-    let offset = 0;
-    for (const c of chunks) {
-      result.set(c, offset);
-      offset += c.length;
-    }
-    return new TextDecoder().decode(result);
-  }
-  // fallback: try pako or manual
+  } catch (e) {}
   return new TextDecoder().decode(data);
+}
+
+function getHeader(respHeaders, name) {
+  if (!respHeaders) return null;
+  const lower = name.toLowerCase();
+  for (const key of Object.keys(respHeaders)) {
+    if (key.toLowerCase() === lower) return respHeaders[key];
+  }
+  return null;
 }
 
 /**
  * 通过加密管道发送 GET 请求
+ * 关键: version字段用undefined(序列化时被忽略),不能用null
  */
 async function pipeGet(path, query = {}) {
+  // 清理空值参数
+  const cleanQuery = {};
+  for (const [k, v] of Object.entries(query)) {
+    if (v !== undefined && v !== null && v !== '') cleanQuery[k] = v;
+  }
+
+  // 构造请求对象 - version用undefined,序列化时自动忽略
   const reqObj = {
     path: path,
     method: 'GET',
-    query: query,
+    query: cleanQuery,
     body: null,
-    version: null,
+    // version 不设置(等同于undefined)
   };
-  const encoded = base64urlEncode(JSON.stringify(reqObj));
+
+  const jsonStr = JSON.stringify(reqObj);
+  const encoded = base64urlEncode(jsonStr);
   const url = `${appConfig.site}/api/secure/pipe?e=${encoded}`;
 
   const resp = await $fetch.get(url, { headers: baseHeaders });
-  if (!resp.ok) {
-    throw new Error(`HTTP ${resp.status}`);
-  }
+  const rawData = resp.data;
+  const respHeaders = resp.respHeaders || resp.headers || {};
 
-  const text = resp.data || resp.text;
-  const obfuscated = resp.headers?.['x-obfuscated'] || resp.headers?.['X-Obfuscated'];
+  // 检查 x-obfuscated 头
+  const obfuscated = getHeader(respHeaders, 'x-obfuscated');
 
-  if (obfuscated) {
-    let bytes = base64urlDecode(text);
-    // XOR 解密 (如果 x-obfuscated: 2 且有密钥)
+  if (obfuscated && typeof rawData === 'string' && rawData.length > 0) {
+    // base64 解码
+    let bytes = base64urlDecode(rawData);
+    // XOR 解密 (仅 x-obfuscated:2 且有密钥时)
     if (obfuscated === '2' && OBF_KEY) {
       const keyBytes = new Uint8Array(OBF_KEY.match(/.{2}/g).map(h => parseInt(h, 16)));
       for (let i = 0; i < bytes.length; i++) {
         bytes[i] ^= keyBytes[i % keyBytes.length];
       }
     }
-    // gzip 解压 (检查 gzip 魔数 0x1f 0x8b)
-    if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
-      return JSON.parse(await gunzip(bytes));
-    }
-    return JSON.parse(new TextDecoder().decode(bytes));
+    // gzip 解压 (官方代码总是解压)
+    const decompressed = await gunzip(bytes);
+    return JSON.parse(decompressed);
   }
 
-  if (typeof text === 'string') {
-    return JSON.parse(text);
+  // 无混淆头: data 可能是 JSON 字符串或已解析的对象
+  if (typeof rawData === 'string') {
+    if (rawData.length === 0) throw new Error('Empty response');
+    try {
+      return JSON.parse(rawData);
+    } catch (e) {
+      throw new Error(`Invalid JSON response: ${rawData.substring(0, 100)}`);
+    }
   }
-  return text;
+  if (rawData && typeof rawData === 'object') return rawData;
+  throw new Error('Unexpected response format');
 }
 
 function getTitle(anime) {
@@ -134,14 +157,13 @@ function getCover(anime) {
 }
 
 function formatCard(anime) {
-  const episodes = anime.episodes || anime.nextAiringEpisode?.episode || '?';
-  const status = anime.status || '';
-  const format = anime.format || '';
   let remarks = '';
+  const format = anime.format || '';
   if (anime.nextAiringEpisode) {
-    remarks = `EP${anime.nextAiringEpisode.episode - 1}/${episodes || '?'}`;
-  } else if (episodes) {
-    remarks = `${episodes}集`;
+    const total = anime.episodes || '?';
+    remarks = `EP${anime.nextAiringEpisode.episode - 1}/${total}`;
+  } else if (anime.episodes) {
+    remarks = `${anime.episodes}集`;
   }
   if (format) remarks = format + (remarks ? ' ' + remarks : '');
 
@@ -158,37 +180,45 @@ function formatCard(anime) {
   };
 }
 
+function errorCard(msg) {
+  return {
+    vod_id: 'error',
+    vod_name: DEBUG ? `[错误] ${msg}` : '加载失败',
+    vod_pic: '',
+    vod_remarks: '',
+    ext: {},
+  };
+}
+
 async function getConfig() {
   return jsonify(appConfig);
 }
 
 async function getCards(ext) {
   ext = argsify(ext);
-  const url = ext.url || 'trending';
+  const urlType = ext.url || 'browse';
   const page = ext.page || 1;
 
-  let data;
-  if (url === 'filter') {
-    const query = {
-      type: 'ANIME',
-      sort: 'POPULARITY_DESC',
-      page: page,
-      perPage: 20,
-    };
-    if (ext.format) query.format = ext.format;
-    if (ext.status) query.status = ext.status;
-    if (ext.genre) query.genre = ext.genre;
-    data = await pipeGet('search/browse', query);
-  } else {
-    data = await pipeGet(url, { page, perPage: 20 });
+  const query = {
+    type: 'ANIME',
+    page: page,
+    perPage: 20,
+  };
+  if (ext.sort) query.sort = ext.sort;
+  if (ext.status) query.status = ext.status;
+  if (ext.format) query.format = ext.format;
+  if (ext.genre) query.genre = ext.genre;
+
+  const apiPath = urlType === 'search' ? 'search' : 'search/browse';
+
+  try {
+    const data = await pipeGet(apiPath, query);
+    const results = data.results || data.data || data.Page?.media || [];
+    const cards = results.map(formatCard);
+    return jsonify({ list: cards });
+  } catch (e) {
+    return jsonify({ list: [errorCard(`getCards: ${e.message || e}`)] });
   }
-
-  const results = data.results || data.data || [];
-  const cards = results.map(formatCard);
-
-  return jsonify({
-    list: cards,
-  });
 }
 
 async function getTracks(ext) {
@@ -199,69 +229,52 @@ async function getTracks(ext) {
     return jsonify({ list: [] });
   }
 
-  const data = await pipeGet('episodes', { anilistId });
-  const providers = data.providers || {};
+  try {
+    const data = await pipeGet('episodes', { anilistId });
+    const providers = data.providers || {};
 
-  const groups = [];
-  for (const [providerName, providerData] of Object.entries(providers)) {
-    const episodes = providerData.episodes || {};
-    const subEps = episodes.sub || [];
-    const dubEps = episodes.dub || [];
-    const ssubEps = episodes.ssub || [];
+    const groups = [];
+    for (const [providerName, providerData] of Object.entries(providers)) {
+      const episodes = providerData.episodes || {};
+      const subEps = episodes.sub || [];
+      const dubEps = episodes.dub || [];
+      const ssubEps = episodes.ssub || [];
 
-    if (subEps.length > 0) {
-      const group = {
-        title: `${providerName.toUpperCase()} SUB`,
-        tracks: subEps.map(ep => ({
-          name: `EP${ep.number}${ep.title ? ' - ' + ep.title : ''}`,
-          pan: '',
-          ext: {
-            episodeId: ep.id,
-            provider: providerName,
-            category: 'sub',
-            anilistId: anilistId,
-          },
-        })),
-      };
-      groups.push(group);
+      const makeTrack = (ep, cat) => ({
+        name: `EP${ep.number}${ep.title ? ' - ' + ep.title : ''}`,
+        pan: '',
+        ext: {
+          episodeId: ep.id,
+          provider: providerName,
+          category: cat,
+          anilistId: anilistId,
+        },
+      });
+
+      if (subEps.length > 0) {
+        groups.push({
+          title: `${providerName.toUpperCase()} SUB`,
+          tracks: subEps.map(ep => makeTrack(ep, 'sub')),
+        });
+      }
+      if (dubEps.length > 0) {
+        groups.push({
+          title: `${providerName.toUpperCase()} DUB`,
+          tracks: dubEps.map(ep => makeTrack(ep, 'dub')),
+        });
+      }
+      if (ssubEps.length > 0) {
+        groups.push({
+          title: `${providerName.toUpperCase()} SSUB`,
+          tracks: ssubEps.map(ep => makeTrack(ep, 'ssub')),
+        });
+      }
     }
 
-    if (dubEps.length > 0) {
-      const group = {
-        title: `${providerName.toUpperCase()} DUB`,
-        tracks: dubEps.map(ep => ({
-          name: `EP${ep.number}${ep.title ? ' - ' + ep.title : ''}`,
-          pan: '',
-          ext: {
-            episodeId: ep.id,
-            provider: providerName,
-            category: 'dub',
-            anilistId: anilistId,
-          },
-        })),
-      };
-      groups.push(group);
-    }
-
-    if (ssubEps.length > 0) {
-      const group = {
-        title: `${providerName.toUpperCase()} SSUB`,
-        tracks: ssubEps.map(ep => ({
-          name: `EP${ep.number}${ep.title ? ' - ' + ep.title : ''}`,
-          pan: '',
-          ext: {
-            episodeId: ep.id,
-            provider: providerName,
-            category: 'ssub',
-            anilistId: anilistId,
-          },
-        })),
-      };
-      groups.push(group);
-    }
+    return jsonify({ list: groups });
+  } catch (e) {
+    return jsonify({ list: [{ title: `[错误] ${e.message || e}`, tracks: [] }] });
   }
-
-  return jsonify({ list: groups });
 }
 
 async function getPlayinfo(ext) {
@@ -272,36 +285,36 @@ async function getPlayinfo(ext) {
     return jsonify({ urls: [], headers: [] });
   }
 
-  const query = {
-    episodeId: episodeId,
-    provider: provider,
-    category: category || 'sub',
-  };
-  if (anilistId) query.anilistId = anilistId;
+  try {
+    const query = {
+      episodeId: episodeId,
+      provider: provider,
+      category: category || 'sub',
+    };
+    if (anilistId) query.anilistId = anilistId;
 
-  const data = await pipeGet('sources', query);
-  const streams = data.streams || [];
+    const data = await pipeGet('sources', query);
+    const streams = data.streams || [];
 
-  if (streams.length === 0) {
+    if (streams.length === 0) {
+      return jsonify({ urls: [], headers: [] });
+    }
+
+    const hlsStream = streams.find(s => s.type === 'hls' || (s.url && s.url.includes('.m3u8'))) || streams[0];
+    const playUrl = hlsStream.url;
+
+    const playHeaders = { 'User-Agent': UA };
+    if (provider === 'zoro' || provider === 'arc') {
+      playHeaders['Referer'] = 'https://hianime.to/';
+    }
+
+    return jsonify({
+      urls: [playUrl],
+      headers: [playHeaders],
+    });
+  } catch (e) {
     return jsonify({ urls: [], headers: [] });
   }
-
-  // 优先选择 HLS 流
-  const hlsStream = streams.find(s => s.type === 'hls' || s.url?.includes('.m3u8')) || streams[0];
-  const playUrl = hlsStream.url;
-
-  // 构建播放 headers (某些提供商需要 referer)
-  const playHeaders = {
-    'User-Agent': UA,
-  };
-  if (provider === 'zoro' || provider === 'arc') {
-    playHeaders['Referer'] = 'https://hianime.to/';
-  }
-
-  return jsonify({
-    urls: [playUrl],
-    headers: [playHeaders],
-  });
 }
 
 async function search(ext) {
@@ -313,15 +326,18 @@ async function search(ext) {
     return jsonify({ list: [] });
   }
 
-  const data = await pipeGet('search', {
-    query: text,
-    type: 'ANIME',
-    page: page,
-    perPage: 20,
-  });
+  try {
+    const data = await pipeGet('search', {
+      query: text,
+      type: 'ANIME',
+      page: page,
+      perPage: 20,
+    });
 
-  const results = data.results || data.data || [];
-  const cards = results.map(formatCard);
-
-  return jsonify({ list: cards });
+    const results = data.results || data.data || data.Page?.media || [];
+    const cards = results.map(formatCard);
+    return jsonify({ list: cards });
+  } catch (e) {
+    return jsonify({ list: [errorCard(`search: ${e.message || e}`)] });
+  }
 }
