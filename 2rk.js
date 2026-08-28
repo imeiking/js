@@ -1,13 +1,7 @@
-// XPTV Spider for 2rk.cc - Verified against real XPTV MacCMS example (duboku.js)
+// XPTV Spider for 2rk.cc
 const cheerio = createCheerio()
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
 const SITE = 'https://www.2rk.cc'
-
-const headers = {
-    'User-Agent': UA,
-    'Referer': SITE,
-    'Origin': SITE,
-}
 
 const appConfig = {
     ver: 20260828,
@@ -21,20 +15,19 @@ const appConfig = {
     ],
 }
 
-const filterList = {
+var filterList = {
     1: [
         { key: 'class', name: '类型', value: [
             {n:'全部',v:''},{n:'动作',v:'动作'},{n:'喜剧',v:'喜剧'},{n:'爱情',v:'爱情'},
             {n:'科幻',v:'科幻'},{n:'恐怖',v:'恐怖'},{n:'剧情',v:'剧情'},{n:'犯罪',v:'犯罪'},
             {n:'悬疑',v:'悬疑'},{n:'战争',v:'战争'},{n:'动画',v:'动画'},{n:'奇幻',v:'奇幻'},
             {n:'冒险',v:'冒险'},{n:'惊悚',v:'惊悚'},{n:'武侠',v:'武侠'},{n:'历史',v:'历史'},
-            {n:'传记',v:'传记'},{n:'纪录',v:'纪录'},{n:'家庭',v:'家庭'},{n:'其他',v:'其他'},
+            {n:'其他',v:'其他'},
         ]},
         { key: 'area', name: '地区', value: [
             {n:'全部',v:''},{n:'大陆',v:'大陆'},{n:'香港',v:'香港'},{n:'台湾',v:'台湾'},
             {n:'日本',v:'日本'},{n:'韩国',v:'韩国'},{n:'欧美',v:'欧美'},{n:'美国',v:'美国'},
-            {n:'英国',v:'英国'},{n:'法国',v:'法国'},{n:'德国',v:'德国'},{n:'印度',v:'印度'},
-            {n:'泰国',v:'泰国'},{n:'其他',v:'其他'},
+            {n:'英国',v:'英国'},{n:'印度',v:'印度'},{n:'泰国',v:'泰国'},{n:'其他',v:'其他'},
         ]},
         { key: 'year', name: '年份', value: [
             {n:'全部',v:''},{n:'2026',v:'2026'},{n:'2025',v:'2025'},{n:'2024',v:'2024'},
@@ -48,8 +41,7 @@ const filterList = {
     2: [
         { key: 'class', name: '类型', value: [
             {n:'全部',v:''},{n:'国产剧',v:'国产剧'},{n:'香港剧',v:'香港剧'},{n:'台湾剧',v:'台湾剧'},
-            {n:'日本剧',v:'日本剧'},{n:'韩国剧',v:'韩国剧'},{n:'欧美剧',v:'欧美剧'},{n:'海外剧',v:'海外剧'},
-            {n:'泰国剧',v:'泰国剧'},{n:'其他',v:'其他'},
+            {n:'日本剧',v:'日本剧'},{n:'韩国剧',v:'韩国剧'},{n:'欧美剧',v:'欧美剧'},{n:'其他',v:'其他'},
         ]},
         { key: 'area', name: '地区', value: [
             {n:'全部',v:''},{n:'大陆',v:'大陆'},{n:'香港',v:'香港'},{n:'台湾',v:'台湾'},
@@ -113,79 +105,106 @@ function resolveUrl(href) {
     return SITE + '/' + href
 }
 
-// Extract card data from a link element (works for both stui and myui)
-function parseCardFromLink($, $link, $scope) {
-    let path = $link.attr('href') || ''
-    if (!path || path === '#' || path.indexOf('javascript:') === 0) return null
-    let title = $link.attr('title') || ''
-    if (!title && $scope) title = $scope.find('.title,.name,h4,h3').first().text().trim()
-    if (!title) title = $link.text().trim()
-    if (!title) return null
-    // FIX: image is on <a data-original> in stui/myui, not <img>
-    let pic = $link.attr('data-original') || $link.attr('data-src') || ''
-    if (!pic && $scope) {
-        let $img = $scope.find('img').first()
-        pic = $img.attr('data-original') || $img.attr('data-src') || $img.attr('src') || ''
-    }
-    let remark = ''
-    if ($scope) remark = $scope.find('.pic-text,.remarks,.note,.tag,.text-right').first().text().trim()
-    if (!remark) remark = $link.find('.pic-text,.text-right').first().text().trim()
-    return {
-        vod_id: path,
-        vod_name: title,
-        vod_pic: pic,
-        vod_remarks: remark,
-        ext: { url: resolveUrl(path) },
+async function fetchPage(url) {
+    try {
+        var resp = await $fetch.get(url, {
+            headers: {
+                'User-Agent': UA,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Referer': SITE,
+            }
+        })
+        return resp.data || resp.body || ''
+    } catch (e) {
+        $print('fetch error: ' + e)
+        return ''
     }
 }
 
 // ============ getCards ============
 async function getCards(ext) {
     ext = argsify(ext)
-    let cards = []
-    let id = ext.id
-    let page = ext.page || 1
-    let filters = ext.filters || {}
+    var cards = []
+    var id = ext.id
+    var page = ext.page || 1
+    var filters = ext.filters || {}
 
-    let c = filters.class || ''
-    let a = filters.area || ''
-    let y = filters.year || ''
-    let o = filters.order || ''
+    var c = filters.class || ''
+    var a = filters.area || ''
+    var y = filters.year || ''
+    var o = filters.order || ''
 
-    // stui format: /vodshow/id-class-area-lang-year-letter-order-page.html
-    let url = `${SITE}/vodshow/${id}-${c}-${a}--${y}--${o}-${page}.html`
+    var url = SITE + '/vodshow/' + id + '-' + c + '-' + a + '--' + y + '--' + o + '-' + page + '.html'
+    var data = await fetchPage(url)
 
-    try {
-        const { data } = await $fetch.get(url, { headers })
-        const $ = cheerio.load(data)
+    if (data) {
+        var $ = cheerio.load(data)
 
-        // stui template: .stui-vodlist__box
-        $('.stui-vodlist__box').each((_, el) => {
-            let $el = $(el)
-            let $link = $el.is('a') ? $el : $el.find('a').first()
-            let card = parseCardFromLink($, $link, $el)
-            if (card) cards.push(card)
+        // stui template
+        $('.stui-vodlist__box').each(function (_, el) {
+            var $el = $(el)
+            var $link = $el.is('a') ? $el : $el.find('a').first()
+            var path = $link.attr('href') || ''
+            if (!path || path === '#' || path.indexOf('javascript:') === 0) return
+            var title = $link.attr('title') || $el.find('.title,.name,h4,h3').first().text().trim() || $link.text().trim()
+            if (!title) return
+            var pic = $link.attr('data-original') || $link.attr('data-src') || ''
+            if (!pic) {
+                var $img = $el.find('img').first()
+                pic = $img.attr('data-original') || $img.attr('data-src') || $img.attr('src') || ''
+            }
+            var remark = $el.find('.pic-text,.remarks,.note,.tag,.text-right').first().text().trim()
+            cards.push({
+                vod_id: path,
+                vod_name: title,
+                vod_pic: pic,
+                vod_remarks: remark,
+                ext: { url: resolveUrl(path) },
+            })
         })
 
-        // myui template: a.myui-vodlist__thumb
+        // myui template fallback
         if (cards.length === 0) {
-            $('a.myui-vodlist__thumb').each((_, el) => {
-                let card = parseCardFromLink($, $(el), null)
-                if (card && !cards.some(c => c.vod_id === card.vod_id)) cards.push(card)
+            $('a.myui-vodlist__thumb').each(function (_, el) {
+                var $link = $(el)
+                var path = $link.attr('href') || ''
+                if (!path || path === '#' || path.indexOf('javascript:') === 0) return
+                var title = $link.attr('title') || ''
+                if (!title) return
+                var pic = $link.attr('data-original') || $link.attr('data-src') || ''
+                var remark = $link.find('.pic-text,.text-right').first().text().trim()
+                cards.push({
+                    vod_id: path,
+                    vod_name: title,
+                    vod_pic: pic,
+                    vod_remarks: remark,
+                    ext: { url: resolveUrl(path) },
+                })
             })
         }
 
         // generic fallback
         if (cards.length === 0) {
-            $('.module-item, .video-item, .vodlist-item').each((_, el) => {
-                let $el = $(el)
-                let $link = $el.is('a') ? $el : $el.find('a').first()
-                let card = parseCardFromLink($, $link, $el)
-                if (card) cards.push(card)
+            $('.module-item,.video-item,.vodlist-item').each(function (_, el) {
+                var $el = $(el)
+                var $link = $el.is('a') ? $el : $el.find('a').first()
+                var path = $link.attr('href') || ''
+                if (!path || path === '#' || path.indexOf('javascript:') === 0) return
+                var title = $link.attr('title') || $el.find('.title,.name,h4,h3').first().text().trim() || $link.text().trim()
+                if (!title) return
+                var $img = $el.find('img').first()
+                var pic = $link.attr('data-original') || $img.attr('data-original') || $img.attr('data-src') || $img.attr('src') || ''
+                var remark = $el.find('.pic-text,.remarks,.note,.tag,.text-right').first().text().trim()
+                cards.push({
+                    vod_id: path,
+                    vod_name: title,
+                    vod_pic: pic,
+                    vod_remarks: remark,
+                    ext: { url: resolveUrl(path) },
+                })
             })
         }
-    } catch (e) {
-        $print('getCards error: ' + e)
     }
 
     return jsonify({
@@ -196,73 +215,72 @@ async function getCards(ext) {
 
 // ============ getTracks ============
 async function getTracks(ext) {
-    const { url } = argsify(ext)
-    let groups = []
+    ext = argsify(ext)
+    var url = ext.url
+    var groups = []
 
-    try {
-        const { data } = await $fetch.get(url, { headers })
-        const $ = cheerio.load(data)
+    var data = await fetchPage(url)
+    if (data) {
+        var $ = cheerio.load(data)
 
         // stui template
-        $('.stui-content__playlist').each((idx, el) => {
-            let tracks = []
-            $(el).find('a').each((_, ep) => {
-                let p = $(ep).attr('href') || ''
+        $('.stui-content__playlist').each(function (idx, el) {
+            var tracks = []
+            $(el).find('a').each(function (_, ep) {
+                var p = $(ep).attr('href') || ''
                 if (!p || p === '#' || p.indexOf('javascript:') === 0) return
-                let name = $(ep).text().trim()
+                var name = $(ep).text().trim()
                 if (!name) return
-                tracks.push({ name, pan: '', ext: { url: resolveUrl(p) } })
+                tracks.push({ name: name, pan: '', ext: { url: resolveUrl(p) } })
             })
-            if (tracks.length > 0) groups.push({ title: '线路' + (idx + 1), tracks })
+            if (tracks.length > 0) groups.push({ title: '线路' + (idx + 1), tracks: tracks })
         })
 
-        // myui template: #playlist1 ~ #playlist5
+        // myui template #playlist1~5
         if (groups.length === 0) {
-            for (let i = 1; i <= 5; i++) {
-                let $pl = $('#playlist' + i)
+            for (var i = 1; i <= 5; i++) {
+                var $pl = $('#playlist' + i)
                 if ($pl.length === 0) continue
-                let tracks = []
-                $pl.find('a').each((_, ep) => {
-                    let p = $(ep).attr('href') || ''
+                var tracks = []
+                $pl.find('a').each(function (_, ep) {
+                    var p = $(ep).attr('href') || ''
                     if (!p || p === '#' || p.indexOf('javascript:') === 0) return
-                    let name = $(ep).text().trim()
+                    var name = $(ep).text().trim()
                     if (!name) return
-                    tracks.push({ name, pan: '', ext: { url: resolveUrl(p) } })
+                    tracks.push({ name: name, pan: '', ext: { url: resolveUrl(p) } })
                 })
-                if (tracks.length > 0) groups.push({ title: '线路' + i, tracks })
+                if (tracks.length > 0) groups.push({ title: '线路' + i, tracks: tracks })
             }
         }
 
         // myui alternative
         if (groups.length === 0) {
-            $('.myui-content__list').each((idx, el) => {
-                let tracks = []
-                $(el).find('a').each((_, ep) => {
-                    let p = $(ep).attr('href') || ''
+            $('.myui-content__list').each(function (idx, el) {
+                var tracks = []
+                $(el).find('a').each(function (_, ep) {
+                    var p = $(ep).attr('href') || ''
                     if (!p || p === '#' || p.indexOf('javascript:') === 0) return
-                    let name = $(ep).text().trim()
+                    var name = $(ep).text().trim()
                     if (!name) return
-                    tracks.push({ name, pan: '', ext: { url: resolveUrl(p) } })
+                    tracks.push({ name: name, pan: '', ext: { url: resolveUrl(p) } })
                 })
-                if (tracks.length > 0) groups.push({ title: '线路' + (idx + 1), tracks })
+                if (tracks.length > 0) groups.push({ title: '线路' + (idx + 1), tracks: tracks })
             })
         }
 
         // generic fallback
         if (groups.length === 0) {
-            let seen = {}
-            let tracks = []
-            $('a[href*="vodplay"], a[href*="/play/"]').each((_, ep) => {
-                let p = $(ep).attr('href') || ''
+            var seen = {}
+            var tracks = []
+            $('a[href*="vodplay"],a[href*="/play/"]').each(function (_, ep) {
+                var p = $(ep).attr('href') || ''
                 if (!p || p === '#' || seen[p]) return
                 seen[p] = true
-                let name = $(ep).text().trim() || '播放'
-                tracks.push({ name, pan: '', ext: { url: resolveUrl(p) } })
+                var name = $(ep).text().trim() || '播放'
+                tracks.push({ name: name, pan: '', ext: { url: resolveUrl(p) } })
             })
-            if (tracks.length > 0) groups.push({ title: '在线', tracks })
+            if (tracks.length > 0) groups.push({ title: '在线', tracks: tracks })
         }
-    } catch (e) {
-        $print('getTracks error: ' + e)
     }
 
     return jsonify({ list: groups })
@@ -291,64 +309,62 @@ function base64decode(str) {
 
 // ============ getPlayinfo ============
 async function getPlayinfo(ext) {
-    const { url } = argsify(ext)
+    ext = argsify(ext)
+    var url = ext.url
+    if (!url) return jsonify({ urls: [] })
 
-    try {
-        const { data } = await $fetch.get(url, { headers })
+    var data = await fetchPage(url)
+    if (!data) return jsonify({ urls: [] })
 
-        // MacCMS: var player_data = {...}</script>
-        let match = data.match(/var\s+player_data\s*=\s*({[\s\S]*?})\s*<\/script>/)
-        if (!match) {
-            match = data.match(/var\s+player_\w+\s*=\s*({[\s\S]*?})\s*<\/script>/)
-        }
-        if (!match) {
-            match = data.match(/var\s+player_\w+\s*=\s*({[\s\S]*?})\s*[;\n]/)
-        }
+    // MacCMS player config
+    var match = data.match(/var\s+player_data\s*=\s*({[\s\S]*?})\s*<\/script>/)
+    if (!match) {
+        match = data.match(/var\s+player_\w+\s*=\s*({[\s\S]*?})\s*<\/script>/)
+    }
+    if (!match) {
+        match = data.match(/var\s+player_\w+\s*=\s*({[\s\S]*?})\s*[;\n]/)
+    }
 
-        if (match) {
-            let obj
-            try {
-                obj = JSON.parse(match[1])
-            } catch (e) {
-                $print('player JSON parse error: ' + e)
-                return jsonify({ urls: [] })
-            }
-
-            let player = obj.url || ''
-
-            if (obj.encrypt == 1) {
-                player = unescape(player)
-            } else if (obj.encrypt == 2) {
-                player = unescape(base64decode(player))
-            } else if (obj.encrypt == 3) {
-                player = player.substring(8)
-                player = base64decode(player)
-                player = player.substring(8, player.length - 8)
-            }
-
-            // resolve relative/protocol-relative URLs
-            if (player) {
-                if (player.startsWith('//')) player = 'https:' + player
-                else if (player.startsWith('/')) player = SITE + player
-                else if (player.indexOf('http') !== 0) player = SITE + '/' + player
-            }
-
-            let result = { urls: [player] }
-            if (obj.url_next) {
-                let nextUrl = obj.url_next
-                if (obj.encrypt == 2) nextUrl = unescape(base64decode(nextUrl))
-                result.next = nextUrl
-            }
-            return jsonify(result)
+    if (match) {
+        var obj
+        try {
+            obj = JSON.parse(match[1])
+        } catch (e) {
+            $print('player JSON parse error: ' + e)
+            return jsonify({ urls: [] })
         }
 
-        // fallback: direct m3u8/mp4 URL in page
-        let direct = data.match(/(https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4|flv)[^\s"'<>]*)/i)
-        if (direct) {
-            return jsonify({ urls: [direct[1]] })
+        var player = obj.url || ''
+
+        if (obj.encrypt == 1) {
+            player = unescape(player)
+        } else if (obj.encrypt == 2) {
+            player = unescape(base64decode(player))
+        } else if (obj.encrypt == 3) {
+            player = player.substring(8)
+            player = base64decode(player)
+            player = player.substring(8, player.length - 8)
         }
-    } catch (e) {
-        $print('getPlayinfo error: ' + e)
+
+        if (player) {
+            if (player.startsWith('//')) player = 'https:' + player
+            else if (player.startsWith('/')) player = SITE + player
+            else if (player.indexOf('http') !== 0) player = SITE + '/' + player
+        }
+
+        var result = { urls: [player] }
+        if (obj.url_next) {
+            var nextUrl = obj.url_next
+            if (obj.encrypt == 2) nextUrl = unescape(base64decode(nextUrl))
+            result.next = nextUrl
+        }
+        return jsonify(result)
+    }
+
+    // fallback: direct stream URL
+    var direct = data.match(/(https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4|flv)[^\s"'<>]*)/i)
+    if (direct) {
+        return jsonify({ urls: [direct[1]] })
     }
 
     return jsonify({ urls: [] })
@@ -357,35 +373,61 @@ async function getPlayinfo(ext) {
 // ============ search ============
 async function search(ext) {
     ext = argsify(ext)
-    let cards = []
-    let text = encodeURIComponent(ext.text || ext.wd || '')
-    let page = ext.page || 1
-    if (!text) return jsonify({ list: [] })
+    var cards = []
+    var keyword = ext.text || ext.wd || ''
+    var page = ext.page || 1
+    if (!keyword) return jsonify({ list: [] })
 
-    try {
-        let url = `${SITE}/vodsearch/-------------.html?wd=${text}&submit=`
-        if (page > 1) url += `&page=${page}`
+    var text = encodeURIComponent(keyword)
+    var url = SITE + '/vodsearch/-------------.html?wd=' + text + '&submit='
+    if (page > 1) url += '&page=' + page
 
-        const { data } = await $fetch.get(url, { headers })
-        const $ = cheerio.load(data)
+    var data = await fetchPage(url)
+    if (data) {
+        var $ = cheerio.load(data)
 
         // stui template
-        $('.stui-vodlist__box').each((_, el) => {
-            let $el = $(el)
-            let $link = $el.is('a') ? $el : $el.find('a').first()
-            let card = parseCardFromLink($, $link, $el)
-            if (card) cards.push(card)
+        $('.stui-vodlist__box').each(function (_, el) {
+            var $el = $(el)
+            var $link = $el.is('a') ? $el : $el.find('a').first()
+            var path = $link.attr('href') || ''
+            if (!path || path === '#' || path.indexOf('javascript:') === 0) return
+            var title = $link.attr('title') || $el.find('.title,.name,h4,h3').first().text().trim()
+            if (!title) return
+            var pic = $link.attr('data-original') || $link.attr('data-src') || ''
+            if (!pic) {
+                var $img = $el.find('img').first()
+                pic = $img.attr('data-original') || $img.attr('data-src') || $img.attr('src') || ''
+            }
+            var remark = $el.find('.pic-text,.remarks,.note,.tag,.text-right').first().text().trim()
+            cards.push({
+                vod_id: path,
+                vod_name: title,
+                vod_pic: pic,
+                vod_remarks: remark,
+                ext: { url: resolveUrl(path) },
+            })
         })
 
         // myui template
         if (cards.length === 0) {
-            $('a.myui-vodlist__thumb').each((_, el) => {
-                let card = parseCardFromLink($, $(el), null)
-                if (card) cards.push(card)
+            $('a.myui-vodlist__thumb').each(function (_, el) {
+                var $link = $(el)
+                var path = $link.attr('href') || ''
+                if (!path || path === '#' || path.indexOf('javascript:') === 0) return
+                var title = $link.attr('title') || ''
+                if (!title) return
+                var pic = $link.attr('data-original') || ''
+                var remark = $link.find('.pic-text,.text-right').first().text().trim()
+                cards.push({
+                    vod_id: path,
+                    vod_name: title,
+                    vod_pic: pic,
+                    vod_remarks: remark,
+                    ext: { url: resolveUrl(path) },
+                })
             })
         }
-    } catch (e) {
-        $print('search error: ' + e)
     }
 
     return jsonify({ list: cards })
