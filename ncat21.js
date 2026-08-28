@@ -6,6 +6,17 @@ const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (
 const SITE = 'https://www.ncat21.com'
 const IMG_CDN = 'https://vres.zyxpedu.com'
 
+// ============ Extension Info ============
+async function getLocalInfo() {
+    return jsonify({
+        name: '网飞猫',
+        ver: '20260827',
+        type: 3,
+        api: 'ncat21',
+        description: '网飞猫影视源 (带筛选)',
+    })
+}
+
 // ============ Compact SHA1 implementation ============
 function sha1Bytes(str) {
     function rotl(n, s) { return (n << s) | (n >>> (32 - s)) }
@@ -52,7 +63,6 @@ function sha1Bytes(str) {
         H3 = (H3 + D) & 0x0ffffffff
         H4 = (H4 + E) & 0x0ffffffff
     }
-    // Return as byte array
     var hex = cvtHex(H0) + cvtHex(H1) + cvtHex(H2) + cvtHex(H3) + cvtHex(H4)
     var bytes = []
     for (var k = 0; k < hex.length; k += 2) bytes.push(parseInt(hex.substr(k, 2), 16))
@@ -63,16 +73,13 @@ function sha1Bytes(str) {
 var cachedCookie = null
 
 function solveCdnChallenge(html) {
-    // Extract the challenge string from the CDN protection page
     var match = html.match(/const\s+a0_0x2a54\s*=\s*\[([^\]]+)\]/)
     if (!match) return null
 
-    // Parse the array
     var parts = match[1].split(',').map(function (s) {
         return s.trim().replace(/^['"]|['"]$/g, '')
     })
 
-    // The array may be rotated; find the hex string (40 chars), cookie name, and 'array'
     var challengeStr = null
     for (var i = 0; i < parts.length; i++) {
         if (/^[0-9A-F]{40}$/.test(parts[i])) {
@@ -84,7 +91,6 @@ function solveCdnChallenge(html) {
 
     var n1 = parseInt(challengeStr[0], 16)
 
-    // Brute force
     for (var i = 0; i < 500000; i++) {
         var hash = sha1Bytes(challengeStr + i)
         if (hash[n1] === 0xb0 && hash[n1 + 1] === 0x0b) {
@@ -110,7 +116,6 @@ async function fetchPage(url, opts) {
     var resp = await $fetch.get(url, { headers: headers })
     var data = resp.data
 
-    // Check if we hit the CDN challenge page
     if (data && data.indexOf('Protected by cdndefend') >= 0) {
         var cookie = solveCdnChallenge(data)
         if (cookie) {
@@ -133,17 +138,213 @@ function resolveImg(src) {
     return IMG_CDN + '/' + src
 }
 
+// ============ Filter Definitions ============
+const movieFilters = [
+    {
+        key: 'class',
+        name: '类型',
+        value: [
+            { n: '全部', v: '' },
+            { n: '动作', v: '动作' },
+            { n: '喜剧', v: '喜剧' },
+            { n: '爱情', v: '爱情' },
+            { n: '科幻', v: '科幻' },
+            { n: '恐怖', v: '恐怖' },
+            { n: '惊悚', v: '惊悚' },
+            { n: '悬疑', v: '悬疑' },
+            { n: '犯罪', v: '犯罪' },
+            { n: '冒险', v: '冒险' },
+            { n: '战争', v: '战争' },
+            { n: '奇幻', v: '奇幻' },
+            { n: '动画', v: '动画' },
+            { n: '剧情', v: '剧情' },
+            { n: '武侠', v: '武侠' },
+            { n: '纪录', v: '纪录' }
+        ]
+    },
+    {
+        key: 'area',
+        name: '地区',
+        value: [
+            { n: '全部', v: '' },
+            { n: '大陆', v: '大陆' },
+            { n: '香港', v: '香港' },
+            { n: '台湾', v: '台湾' },
+            { n: '美国', v: '美国' },
+            { n: '韩国', v: '韩国' },
+            { n: '日本', v: '日本' },
+            { n: '法国', v: '法国' },
+            { n: '英国', v: '英国' },
+            { n: '德国', v: '德国' },
+            { n: '泰国', v: '泰国' },
+            { n: '印度', v: '印度' },
+            { n: '欧洲', v: '欧洲' },
+            { n: '其它', v: '其它' }
+        ]
+    },
+    {
+        key: 'year',
+        name: '年份',
+        value: [
+            { n: '全部', v: '' },
+            { n: '2026', v: '2026' },
+            { n: '2025', v: '2025' },
+            { n: '2024', v: '2024' },
+            { n: '2023', v: '2023' },
+            { n: '2022', v: '2022' },
+            { n: '2021', v: '2021' },
+            { n: '2020', v: '2020' },
+            { n: '2019', v: '2019' },
+            { n: '2018', v: '2018' },
+            { n: '2017', v: '2017' },
+            { n: '2016-2010', v: '2016-2010' },
+            { n: '2009-2000', v: '2009-2000' },
+            { n: '90年代', v: '90年代' },
+            { n: '80年代', v: '80年代' },
+            { n: '更早', v: '更早' }
+        ]
+    },
+    {
+        key: 'by',
+        name: '排序',
+        value: [
+            { n: '最新', v: 'time' },
+            { n: '人气', v: 'hits' },
+            { n: '评分', v: 'score' }
+        ]
+    }
+]
+
+const tvFilters = [
+    {
+        key: 'class',
+        name: '类型',
+        value: [
+            { n: '全部', v: '' },
+            { n: '国产剧', v: '国产剧' },
+            { n: '港台剧', v: '港台剧' },
+            { n: '日韩剧', v: '日韩剧' },
+            { n: '欧美剧', v: '欧美剧' },
+            { n: '海外剧', v: '海外剧' },
+            { n: '古装', v: '古装' },
+            { n: '战争', v: '战争' },
+            { n: '偶像', v: '偶像' },
+            { n: '悬疑', v: '悬疑' },
+            { n: '犯罪', v: '犯罪' },
+            { n: '家庭', v: '家庭' },
+            { n: '科幻', v: '科幻' }
+        ]
+    },
+    {
+        key: 'area',
+        name: '地区',
+        value: [
+            { n: '全部', v: '' },
+            { n: '大陆', v: '大陆' },
+            { n: '香港', v: '香港' },
+            { n: '台湾', v: '台湾' },
+            { n: '韩国', v: '韩国' },
+            { n: '日本', v: '日本' },
+            { n: '美国', v: '美国' },
+            { n: '英国', v: '英国' },
+            { n: '泰国', v: '泰国' }
+        ]
+    },
+    {
+        key: 'year',
+        name: '年份',
+        value: [
+            { n: '全部', v: '' },
+            { n: '2026', v: '2026' },
+            { n: '2025', v: '2025' },
+            { n: '2024', v: '2024' },
+            { n: '2023', v: '2023' },
+            { n: '2022', v: '2022' },
+            { n: '2021', v: '2021' },
+            { n: '2020', v: '2020' },
+            { n: '2019', v: '2019' },
+            { n: '2018', v: '2018' },
+            { n: '2017', v: '2017' },
+            { n: '更早', v: '更早' }
+        ]
+    },
+    {
+        key: 'by',
+        name: '排序',
+        value: [
+            { n: '最新', v: 'time' },
+            { n: '人气', v: 'hits' },
+            { n: '评分', v: 'score' }
+        ]
+    }
+]
+
+const animeFilters = [
+    {
+        key: 'class',
+        name: '类型',
+        value: [
+            { n: '全部', v: '' },
+            { n: '热血', v: '热血' },
+            { n: '搞笑', v: '搞笑' },
+            { n: '冒险', v: '冒险' },
+            { n: '科幻', v: '科幻' },
+            { n: '战斗', v: '战斗' },
+            { n: '后宫', v: '后宫' },
+            { n: '日常', v: '日常' },
+            { n: '治愈', v: '治愈' },
+            { n: '泡面', v: '泡面' },
+            { n: '恋爱', v: '恋爱' }
+        ]
+    },
+    {
+        key: 'area',
+        name: '地区',
+        value: [
+            { n: '全部', v: '' },
+            { n: '大陆', v: '大陆' },
+            { n: '日本', v: '日本' },
+            { n: '欧美', v: '欧美' },
+            { n: '其它', v: '其它' }
+        ]
+    },
+    {
+        key: 'year',
+        name: '年份',
+        value: [
+            { n: '全部', v: '' },
+            { n: '2026', v: '2026' },
+            { n: '2025', v: '2025' },
+            { n: '2024', v: '2024' },
+            { n: '2023', v: '2023' },
+            { n: '2022', v: '2022' },
+            { n: '2021', v: '2021' },
+            { n: '2020', v: '2020' },
+            { n: '更早', v: '更早' }
+        ]
+    },
+    {
+        key: 'by',
+        name: '排序',
+        value: [
+            { n: '最新', v: 'time' },
+            { n: '人气', v: 'hits' },
+            { n: '评分', v: 'score' }
+        ]
+    }
+]
+
 // ============ Site Config ============
 const appConfig = {
     ver: 20260827,
     title: '网飞猫',
     site: SITE,
     tabs: [
-        { name: '电影', ext: { id: 1 } },
-        { name: '连续剧', ext: { id: 2 } },
-        { name: '动漫', ext: { id: 3 } },
-        { name: '综艺纪录', ext: { id: 4 } },
-        { name: '短剧', ext: { id: 6 } },
+        { name: '电影', ext: { id: 1, filter: movieFilters } },
+        { name: '连续剧', ext: { id: 2, filter: tvFilters } },
+        { name: '动漫', ext: { id: 3, filter: animeFilters } },
+        { name: '综艺纪录', ext: { id: 4, filter: tvFilters } },
+        { name: '短剧', ext: { id: 6, filter: tvFilters } },
     ],
 }
 
@@ -151,17 +352,23 @@ async function getConfig() {
     return jsonify(appConfig)
 }
 
-// ============ Get video list (category pages) ============
+// ============ Get video list (with filter/pagination support) ============
 async function getCards(ext) {
     ext = argsify(ext)
     var cards = []
-    var id = ext.id
+    var id = ext.id || 1
     var page = ext.page || 1
 
+    var filterClass = ext.class || ''
+    var filterArea = ext.area || ''
+    var filterYear = ext.year || ''
+    var filterBy = ext.by || 'time'
+
     try {
-        var url = SITE + '/'
-        if (id > 0) {
-            url = SITE + '/channel/' + id + (page > 1 ? '-' + page : '') + '.html'
+        // MacCMS / standard CMS route: /show/{id}-{area}-{by}-{class}-{lang}-{letter}---{page}---{year}.html
+        var url = SITE + '/channel/' + id + (page > 1 ? '-' + page : '') + '.html'
+        if (filterClass || filterArea || filterYear || (filterBy && filterBy !== 'time')) {
+            url = SITE + '/show/' + id + '-' + encodeURIComponent(filterArea) + '-' + encodeURIComponent(filterBy) + '-' + encodeURIComponent(filterClass) + '---' + page + '---' + encodeURIComponent(filterYear) + '.html'
         }
 
         var data = await fetchPage(url)
@@ -172,7 +379,6 @@ async function getCards(ext) {
         $('.module-item').each(function (_, element) {
             var $el = $(element)
             var href = $el.find('a.v-item').attr('href')
-            // Title: pick the visible .v-item-title (not display:none, not watermark)
             var title = ''
             $el.find('.v-item-title').each(function (_, t) {
                 var $t = $(t)
@@ -186,7 +392,6 @@ async function getCards(ext) {
             if (!title) {
                 title = $el.find('.v-item-title').not('[style*="display"]').first().text().trim()
             }
-            // Cover: pick img without id="noneCoverImg" and not the placeholder
             var cover = ''
             $el.find('.v-item-cover img').each(function (_, img) {
                 var src = $(img).attr('data-original') || ''
@@ -219,7 +424,7 @@ async function getCards(ext) {
     return jsonify({ list: cards })
 }
 
-// ============ Get episodes (detail page) ============
+// ============ Get episodes ============
 async function getTracks(ext) {
     ext = argsify(ext)
     var tracks = []
@@ -231,7 +436,6 @@ async function getTracks(ext) {
 
         var $ = cheerio.load(data)
 
-        // Get source names
         var sourceNames = []
         $('.source-item').each(function (_, el) {
             var name = $(el).find('.source-item-label').text().trim()
@@ -239,7 +443,6 @@ async function getTracks(ext) {
             sourceNames.push(name + (sub ? '(' + sub + ')' : ''))
         })
 
-        // Get episode lists for each source
         var groups = []
         $('.episode-list').each(function (idx, el) {
             var groupTracks = []
@@ -260,7 +463,6 @@ async function getTracks(ext) {
             }
         })
 
-        // If no groups found, try the play button
         if (groups.length === 0) {
             var playHref = $('.play-btn').parent().attr('href')
             if (playHref) {
@@ -283,7 +485,7 @@ async function getTracks(ext) {
     return jsonify({ list: tracks })
 }
 
-// ============ Get play URL (play page) ============
+// ============ Get play URL ============
 async function getPlayinfo(ext) {
     ext = argsify(ext)
     var url = ext.url
@@ -300,7 +502,6 @@ async function getPlayinfo(ext) {
         })
         if (!data) return jsonify({ urls: [] })
 
-        // Extract m3u8/mp4 URL from playSource config
         var match = data.match(/src\s*:\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/)
         if (match) {
             return jsonify({
@@ -309,7 +510,6 @@ async function getPlayinfo(ext) {
             })
         }
 
-        // Try alternative pattern: player_xxxx = {url: "..."}
         var playerMatch = data.match(/url\s*:\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/)
         if (playerMatch) {
             return jsonify({
@@ -318,7 +518,6 @@ async function getPlayinfo(ext) {
             })
         }
 
-        // Try finding any m3u8 URL
         var m3u8Match = data.match(/["'](https?:\/\/[^"']*m3u8[^"']*)["']/)
         if (m3u8Match) {
             return jsonify({
@@ -345,7 +544,6 @@ async function search(ext) {
     if (!keyword) return jsonify({ list: [] })
 
     try {
-        // First get the search token from homepage
         var homeData = await fetchPage(SITE + '/')
         var tokenMatch = homeData.match(/name="t"\s+value="([^"]+)"/)
         var token = tokenMatch ? tokenMatch[1] : ''
