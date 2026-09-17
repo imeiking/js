@@ -5,18 +5,18 @@ const UA =
 let appConfig = {
     ver: 1,
     title: 'fmovies',
-    site: 'https://fmovies.llc',
+    site: 'https://dulo.sx',
     tabs: [
         {
             name: 'movies',
             ext: {
-                url: 'https://fmovies.llc/movie',
+                url: 'https://dulo.sx/movie',
             },
         },
         {
             name: 'tv-shows',
             ext: {
-                url: 'https://fmovies.llc/tv-show',
+                url: 'https://dulo.sx/tv-show',
             },
         },
     ],
